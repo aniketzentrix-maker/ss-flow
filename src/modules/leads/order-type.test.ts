@@ -1,18 +1,25 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import { isCustomLeadOrder, normalizeLeadOrderType } from "./order-type";
+import test from "node:test";
+import { deriveLeadOrderTypeFromBusinessCategories } from "@/modules/leads/order-type";
 
-describe("lead order type", () => {
-  it("defaults and migrates legacy STANDARD to READY_STOCK", () => {
-    assert.equal(normalizeLeadOrderType(undefined), "READY_STOCK");
-    assert.equal(normalizeLeadOrderType("STANDARD"), "READY_STOCK");
-    assert.equal(normalizeLeadOrderType("ready_stock"), "READY_STOCK");
-    assert.equal(normalizeLeadOrderType("CUSTOM"), "CUSTOM");
-  });
-
-  it("detects custom orders for PO warnings", () => {
-    assert.equal(isCustomLeadOrder("CUSTOM"), true);
-    assert.equal(isCustomLeadOrder("READY_STOCK"), false);
-    assert.equal(isCustomLeadOrder("STANDARD"), false);
-  });
+test("derive order type from business category", () => {
+  const categories = [
+    { id: "t1", code: "TRADING", name: "Trading" },
+    { id: "m1", code: "MFG", name: "Manufactured" },
+  ];
+  assert.equal(
+    deriveLeadOrderTypeFromBusinessCategories([{ categoryId: "t1" }], categories),
+    "READY_STOCK",
+  );
+  assert.equal(
+    deriveLeadOrderTypeFromBusinessCategories([{ categoryId: "m1" }], categories),
+    "CUSTOM",
+  );
+  assert.equal(
+    deriveLeadOrderTypeFromBusinessCategories(
+      [{ categoryId: "t1" }, { categoryId: "m1" }],
+      categories,
+    ),
+    "CUSTOM",
+  );
 });

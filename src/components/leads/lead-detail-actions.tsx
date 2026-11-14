@@ -152,9 +152,12 @@ export function LeadDetailActions({
       const res = await fetch(`/api/v1/leads/${leadId}/quotations`);
       const json = await res.json().catch(() => null);
       const list = (json?.data ?? []) as typeof quotationOptions;
-      const eligible = list.filter((row) => row.status === "SENT" || row.status === "ACCEPTED");
+      const eligible = list
+        .filter((row) => row.status === "SENT" || row.status === "ACCEPTED")
+        .sort((a, b) => b.version - a.version);
       setQuotationOptions(eligible);
-      if (eligible.length === 1) setAcceptedQuotationId(eligible[0].id);
+      if (eligible.length) setAcceptedQuotationId(eligible[0].id);
+      else setAcceptedQuotationId("");
     })();
   }, [reviewOpen, leadId]);
 
@@ -686,22 +689,28 @@ export function LeadDetailActions({
                   </p>
                 ) : null}
               </div>
-              {quotationOptions.length ? (
-                <Field label="Accepted quotation" detail="Pre-fills rates from sent quote">
+              <Field
+                label="Approved quotation (required)"
+                detail="Sales order uses sent quotation pricing only"
+              >
+                {quotationOptions.length ? (
                   <select
                     className={controlClass}
                     value={acceptedQuotationId}
                     onChange={(e) => setAcceptedQuotationId(e.target.value)}
                   >
-                    <option value="">None</option>
                     {quotationOptions.map((row) => (
                       <option key={row.id} value={row.id}>
                         {row.quotationNumber} v{row.version} ({row.status})
                       </option>
                     ))}
                   </select>
-                </Field>
-              ) : null}
+                ) : (
+                  <p className="text-sm text-amber-800 dark:text-amber-200">
+                    Create a quotation, get admin approval, mark it sent — then convert.
+                  </p>
+                )}
+              </Field>
               <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-4">
                 <Field label="Customer PO number">
                   <input className={controlClass} value={poNumber} onChange={(e) => setPoNumber(e.target.value)} />
@@ -800,15 +809,12 @@ export function LeadDetailActions({
                             ))}
                           </select>
                         </Field>
-                        <Field label="Unit price (optional)">
+                        <Field label="Unit price (from quote)" detail="Locked to approved quotation">
                           <input
-                            className={controlClass}
-                            inputMode="decimal"
+                            className={`${controlClass} bg-muted/30 cursor-not-allowed`}
+                            readOnly
                             value={prices[item.id] || ""}
-                            placeholder="ERP default: 0"
-                            onChange={(event) =>
-                              setPrices((current) => ({ ...current, [item.id]: event.target.value }))
-                            }
+                            placeholder="Select sent quotation"
                           />
                         </Field>
                         <Field label="Fulfillment">
@@ -855,7 +861,9 @@ export function LeadDetailActions({
               <div className="flex flex-wrap gap-2">
                 <Button
                   pending={convertPost.pending}
-                  disabled={items.some((item) => !productSelections[item.id])}
+                  disabled={
+                    !acceptedQuotationId || items.some((item) => !productSelections[item.id])
+                  }
                   onClick={() =>
                     void convertPost.post(
                       `/api/v1/leads/${leadId}/convert`,

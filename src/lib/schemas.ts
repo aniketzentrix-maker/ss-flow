@@ -927,7 +927,7 @@ export const leadConvertSchema = z.object({
   poNumber: z.string().max(80).optional(),
   poAttachmentUrl: z.string().max(500).optional(),
   advanceAmount: z.string().optional(),
-  quotationId: z.string().uuid().optional(),
+  quotationId: z.string().uuid(),
   lines: z
     .array(
       z.object({

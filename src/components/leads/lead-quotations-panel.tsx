@@ -178,9 +178,9 @@ export function LeadQuotationsPanel({
                               {row.sentAt ? ` · Sent ${new Date(row.sentAt).toLocaleDateString("en-IN")}` : ""}
                               {row.hasSentCopy ? " · Copy saved" : ""}
                             </p>
-                            {row.approvalRequired && !row.approvedAt && row.status === "DRAFT" ? (
+                            {!row.approvedAt && row.status === "DRAFT" ? (
                               <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">
-                                Manager approval required before send
+                                Admin must approve pricing before send
                               </p>
                             ) : null}
                           </button>
@@ -231,9 +231,9 @@ export function LeadQuotationsPanel({
                         Preview quotation
                       </a>
                     )}
-                    {canManage && selected.status === "DRAFT" && selected.approvalRequired && !selected.approvedAt && canApprove ? (
+                    {canManage && selected.status === "DRAFT" && !selected.approvedAt && canApprove ? (
                       <Button type="button" tone="ghost" pending={actionPost.pending} onClick={() => void runAction("approve", selected.id)}>
-                        Approve discount
+                        Approve pricing
                       </Button>
                     ) : null}
                     {canManage && (selected.status === "SENT" || selected.status === "EXPIRED") ? (
@@ -261,7 +261,7 @@ export function LeadQuotationsPanel({
                       <Button
                         type="button"
                         pending={actionPost.pending}
-                        disabled={selected.approvalRequired && !selected.approvedAt}
+                        disabled={!selected.approvedAt}
                         onClick={() => void runAction("send", selected.id)}
                       >
                         Mark sent

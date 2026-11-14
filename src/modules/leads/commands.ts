@@ -694,34 +694,52 @@ export async function convertLeadToSalesOrder(
         throw new AppError(400, "VALIDATION", "Review every requested lead item before creating the sales order.");
       }
 
-      let quotationItemsByLeadItem = new Map<
-        string,
-        { productId: string | null; rate: string; pricingBasis: string | null }
-      >();
-      let acceptedQuotationId: string | null = null;
-      if (input.quotationId) {
-        const quote = await tx.quotation.findFirst({
-          where: { id: input.quotationId, leadId, plantId },
-          include: { items: true },
-        });
-        if (!quote) throw new AppError(404, "NOT_FOUND", "Selected quotation was not found.");
-        if (!quotationCanAcceptOnConvert(quote.status)) {
-          throw new AppError(409, "INVALID_STATE", "Quotation must be sent (or already accepted) to convert.");
-        }
-        acceptedQuotationId = quote.id;
-        quotationItemsByLeadItem = new Map(
-          quote.items
-            .filter((row) => row.leadItemId)
-            .map((row) => [
-              row.leadItemId!,
-              {
-                productId: row.productId,
-                rate: row.rate.toString(),
-                pricingBasis: row.pricingBasis,
-              },
-            ]),
+      if (!input.quotationId?.trim()) {
+        throw new AppError(
+          400,
+          "VALIDATION",
+          "Select an approved, sent quotation before creating the sales order.",
         );
       }
+      const quote = await tx.quotation.findFirst({
+        where: { id: input.quotationId.trim(), leadId, plantId },
+        include: { items: true },
+      });
+      if (!quote) throw new AppError(404, "NOT_FOUND", "Selected quotation was not found.");
+      if (!quotationCanAcceptOnConvert(quote.status)) {
+        throw new AppError(409, "INVALID_STATE", "Quotation must be sent (or already accepted) to convert.");
+      }
+      if (!quote.approvedAt) {
+        throw new AppError(
+          409,
+          "APPROVAL_REQUIRED",
+          "Quotation pricing was not approved before it was sent. Revise and re-approve, or contact admin.",
+        );
+      }
+      const quotedLeadItemIds = new Set(
+        quote.items.map((row) => row.leadItemId).filter((id): id is string => Boolean(id)),
+      );
+      const missingItems = lead.items.filter((item) => !quotedLeadItemIds.has(item.id));
+      if (missingItems.length) {
+        throw new AppError(
+          400,
+          "VALIDATION",
+          "The quotation must include every requested lead item before conversion.",
+        );
+      }
+      const acceptedQuotationId = quote.id;
+      const quotationItemsByLeadItem = new Map(
+        quote.items
+          .filter((row) => row.leadItemId)
+          .map((row) => [
+            row.leadItemId!,
+            {
+              productId: row.productId,
+              rate: row.rate.toString(),
+              pricingBasis: row.pricingBasis,
+            },
+          ]),
+      );
 
       const orderLines = await Promise.all(lead.items.map(async (item) => {
         const selection = input.lines.find((line) => line.leadItemId === item.id);
@@ -742,15 +760,25 @@ export async function convertLeadToSalesOrder(
             ...(leadTimeDays != null ? { estimatedLeadTimeDays: leadTimeDays } : {}),
           },
         });
+        const quotedRate = quoted?.rate;
+        if (!quotedRate) {
+          throw new AppError(
+            400,
+            "VALIDATION",
+            `Missing approved offer rate on quotation for ${item.itemDescription || "a requested item"}.`,
+          );
+        }
+        if (selection?.unitPrice?.trim() && selection.unitPrice.trim() !== quotedRate) {
+          throw new AppError(
+            400,
+            "VALIDATION",
+            "Unit price must match the approved quotation; change the quote instead.",
+          );
+        }
         return {
           productId: product.id,
           qtyOrdered: item.quantity.toString(),
-          unitPrice:
-            selection?.unitPrice?.trim() ||
-            quoted?.rate ||
-            item.targetPrice?.toString() ||
-            product.sellingPrice?.toString() ||
-            "0",
+          unitPrice: quotedRate,
           taxPct: product.taxRate?.toString() || "0",
           uom: item.uom || product.salesUom || product.uom,
           specs: {

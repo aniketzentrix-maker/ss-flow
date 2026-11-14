@@ -2,9 +2,12 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Plus, Upload, X, FileText, Loader2 } from "lucide-react";
 import { CreatableSpecSelect } from "@/components/ui/creatable-spec-select";
+import { LeadThicknessField } from "@/components/leads/lead-thickness-field";
+import { LeadDimensionMmField } from "@/components/leads/lead-dimension-mm-field";
+import { isInchConvertibleSpecKey } from "@/lib/domain/dimension-units";
 import { toast } from "@/components/toast";
 import {
   resolveProductFieldConfig,
@@ -29,8 +32,9 @@ import { LeadPossibleDuplicates } from "@/components/leads/lead-possible-duplica
 import { FormFeedback } from "@/components/form-feedback";
 import { usePost } from "@/components/use-post";
 import type { DuplicateMatch } from "@/modules/leads/duplicates";
-import { LEAD_GRADE_OPTIONS, LEAD_ORDER_TYPES } from "@/modules/leads/order-type";
-import { LEAD_PRIORITIES, LEAD_SOURCES, leadOrderTypeLabel, leadSourceLabel } from "@/modules/leads/status";
+import { deriveLeadOrderTypeFromBusinessCategories, LEAD_GRADE_OPTIONS } from "@/modules/leads/order-type";
+import { estimateLeadItemWeightKg } from "@/modules/leads/estimate-item-weight";
+import { LEAD_PRIORITIES, LEAD_SOURCES, leadSourceLabel } from "@/modules/leads/status";
 
 /** Re-enable when manufacturing & commercial fields should show on lead create. */
 const SHOW_LEAD_ITEM_MFG_COMMERCIAL = false;
@@ -118,7 +122,6 @@ type FormValues = {
   companyName: string;
   gstin: string;
   customerId: string;
-  orderType: (typeof LEAD_ORDER_TYPES)[number];
   source: (typeof LEAD_SOURCES)[number];
   priority: (typeof LEAD_PRIORITIES)[number];
   assigneeId: string;
@@ -375,7 +378,7 @@ function LeadItemFields({
   setValue: UseFormSetValue<FormValues>;
   canRemove: boolean;
   onRemove: () => void;
-  categories: { id: string; name: string }[];
+  categories: { id: string; name: string; code: string }[];
   products: {
     id: string;
     name: string;
@@ -405,6 +408,7 @@ function LeadItemFields({
   const selectedSpecs =
     (useWatch({ control, name: `items.${index}.specifications` }) as Record<string, string>) ?? {};
   const uom = useWatch({ control, name: `items.${index}.uom` });
+  const quantity = useWatch({ control, name: `items.${index}.quantity` }) ?? "";
   const mfgGrade = useWatch({ control, name: `items.${index}.mfgGrade` }) ?? "";
 
   const visibleProducts = products.filter(
@@ -430,6 +434,23 @@ function LeadItemFields({
         ? missingRequired.length === 0 && invalidNumeric.length === 0
         : selectedVariantId),
   );
+
+  const specsKey = useMemo(() => JSON.stringify(selectedSpecs), [selectedSpecs]);
+  const autoEstimatedWeight = useMemo(() => {
+    if (!isSpecComplete) return "";
+    return (
+      estimateLeadItemWeightKg({
+        configId: config?.id ?? null,
+        uom: uom || "",
+        quantity: quantity || "1",
+        specs: selectedSpecs,
+      }) ?? ""
+    );
+  }, [config?.id, uom, quantity, specsKey, isSpecComplete, selectedSpecs]);
+
+  useEffect(() => {
+    setValue(`items.${index}.estimatedWeight`, autoEstimatedWeight);
+  }, [autoEstimatedWeight, index, setValue]);
 
   // Fallback for unconfigured products
   const hiddenKeys = new Set([
@@ -759,6 +780,27 @@ function LeadItemFields({
             const unit = field.unit || specUnit(field.key);
             const labelWithUnit = unit ? `${field.label} (${unit})` : field.label;
 
+            if (field.type === "select" && field.key === "thickness") {
+              return (
+                <LeadField key={field.key} label={field.label} detail="Choose mm or SWG gauge — gauge is converted to mm">
+                  <LeadThicknessField
+                    specs={selectedSpecs}
+                    options={optionsFor("thickness")}
+                    disabled={!selectedParent}
+                    canManageProducts={canManageProducts}
+                    categoryId={categoryId}
+                    parentProductId={parentProductId}
+                    datalistId={`lead-swg-${index}`}
+                    onGaugeThicknessMm={(mm) => setValue(`items.${index}.gaugeThicknessMm`, mm)}
+                    onSpecsChange={(next) => {
+                      setValue(`items.${index}.specifications`, next);
+                      syncVariantAndUom(next);
+                    }}
+                  />
+                </LeadField>
+              );
+            }
+
             if (field.type === "select") {
               return (
                 <LeadField key={field.key} label={field.label}>
@@ -773,6 +815,27 @@ function LeadItemFields({
                     categoryId={categoryId}
                     productId={parentProductId}
                     ariaLabel={`Select or add ${field.label}`}
+                  />
+                </LeadField>
+              );
+            }
+
+            if (field.type === "number" && isInchConvertibleSpecKey(field.key)) {
+              return (
+                <LeadField
+                  key={field.key}
+                  label={field.label}
+                  detail="Choose mm or inch — inch is converted to mm"
+                >
+                  <LeadDimensionMmField
+                    specKey={field.key as "diameter" | "wireDiameterMm" | "innerDiameterMm" | "outerDiameterMm"}
+                    label={field.label}
+                    specs={selectedSpecs}
+                    disabled={!selectedParent}
+                    onSpecsChange={(next) => {
+                      setValue(`items.${index}.specifications`, next);
+                      syncVariantAndUom(next);
+                    }}
                   />
                 </LeadField>
               );
@@ -835,24 +898,120 @@ function LeadItemFields({
           })
         ) : (
           <>
-            {fallbackSelectorKeys.map((key) => (
-              <LeadField key={key} label={specLabel(key)}>
-                <CreatableSpecSelect
-                  fieldName={key}
-                  fieldLabel={specLabel(key)}
-                  unit={specUnit(key)}
-                  value={selectedSpecs[key] ?? ""}
-                  onChange={(val) => setFallbackSpec(key, val)}
-                  options={optionsFor(key)}
-                  canCreate={canManageProducts}
-                  categoryId={categoryId}
-                  productId={parentProductId}
-                  ariaLabel={`Select or add ${specLabel(key)}`}
-                />
-              </LeadField>
-            ))}
+            {fallbackSelectorKeys.map((key) =>
+              isInchConvertibleSpecKey(key) ? (
+                <LeadField
+                  key={key}
+                  label={specLabel(key)}
+                  detail="Choose mm or inch — inch is converted to mm"
+                >
+                  <LeadDimensionMmField
+                    specKey={key as "diameter" | "wireDiameterMm" | "innerDiameterMm" | "outerDiameterMm"}
+                    label={specLabel(key)}
+                    specs={selectedSpecs}
+                    disabled={!selectedParent}
+                    onSpecsChange={(next) => {
+                      setValue(`items.${index}.specifications`, next);
+                      const matches = variants.filter((variant) =>
+                        fallbackSelectorKeys.every(
+                          (specKey) =>
+                            String(variant.specs[specKey] ?? "") === String(next[specKey] ?? ""),
+                        ),
+                      );
+                      const exact = matches.length === 1 ? matches[0] : undefined;
+                      setValue(`items.${index}.productVariantId`, exact?.id ?? "");
+                      setValue(`items.${index}.productId`, exact?.materialMasterId ?? "");
+                      setValue(`items.${index}.uom`, exact?.uom ?? "");
+                    }}
+                  />
+                </LeadField>
+              ) : key === "thickness" ? (
+                <LeadField
+                  key={key}
+                  label={specLabel(key)}
+                  detail="Choose mm or SWG gauge — gauge is converted to mm"
+                >
+                  <LeadThicknessField
+                    specs={selectedSpecs}
+                    options={optionsFor("thickness")}
+                    disabled={!selectedParent}
+                    canManageProducts={canManageProducts}
+                    categoryId={categoryId}
+                    parentProductId={parentProductId}
+                    datalistId={`lead-swg-fb-${index}`}
+                    onGaugeThicknessMm={(mm) => setValue(`items.${index}.gaugeThicknessMm`, mm)}
+                    onSpecsChange={(next) => {
+                      setValue(`items.${index}.specifications`, next);
+                      const matches = variants.filter((variant) =>
+                        fallbackSelectorKeys.every(
+                          (specKey) =>
+                            String(variant.specs[specKey] ?? "") === String(next[specKey] ?? ""),
+                        ),
+                      );
+                      const exact = matches.length === 1 ? matches[0] : undefined;
+                      setValue(`items.${index}.productVariantId`, exact?.id ?? "");
+                      setValue(`items.${index}.productId`, exact?.materialMasterId ?? "");
+                      setValue(`items.${index}.uom`, exact?.uom ?? "");
+                    }}
+                  />
+                </LeadField>
+              ) : (
+                <LeadField key={key} label={specLabel(key)}>
+                  <CreatableSpecSelect
+                    fieldName={key}
+                    fieldLabel={specLabel(key)}
+                    unit={specUnit(key)}
+                    value={selectedSpecs[key] ?? ""}
+                    onChange={(val) => setFallbackSpec(key, val)}
+                    options={optionsFor(key)}
+                    canCreate={canManageProducts}
+                    categoryId={categoryId}
+                    productId={parentProductId}
+                    ariaLabel={`Select or add ${specLabel(key)}`}
+                  />
+                </LeadField>
+              ),
+            )}
             {fallbackCustomerInputFields.map(([key, configuredValue]) => {
               const unit = specUnit(key);
+              if (isInchConvertibleSpecKey(key)) {
+                return (
+                  <LeadField
+                    key={key}
+                    label={specLabel(key)}
+                    detail="Choose mm or inch — inch is converted to mm"
+                  >
+                    <LeadDimensionMmField
+                      specKey={key as "diameter" | "wireDiameterMm" | "innerDiameterMm" | "outerDiameterMm"}
+                      label={specLabel(key)}
+                      specs={selectedSpecs}
+                      disabled={!selectedParent}
+                      onSpecsChange={(next) => setValue(`items.${index}.specifications`, next)}
+                    />
+                  </LeadField>
+                );
+              }
+              if (key === "thickness") {
+                return (
+                  <LeadField
+                    key={key}
+                    label={specLabel(key)}
+                    detail="Choose mm or SWG gauge — gauge is converted to mm"
+                  >
+                    <LeadThicknessField
+                      specs={selectedSpecs}
+                      options={optionsFor("thickness")}
+                      disabled={!selectedParent}
+                      canManageProducts={canManageProducts}
+                      categoryId={categoryId}
+                      parentProductId={parentProductId}
+                      datalistId={`lead-swg-ci-${index}`}
+                      onGaugeThicknessMm={(mm) => setValue(`items.${index}.gaugeThicknessMm`, mm)}
+                      onSpecsChange={(next) => setValue(`items.${index}.specifications`, next)}
+                    />
+                  </LeadField>
+                );
+              }
               return (
                 <LeadField
                   key={key}
@@ -909,12 +1068,16 @@ function LeadItemFields({
             }}
           />
         </LeadField>
-        <LeadField label="Est. weight">
+        <LeadField
+          label="Est. weight (kg)"
+          detail={isSpecComplete ? "Auto from qty, UOM & dimensions (SS ~8 g/cm³)" : undefined}
+        >
           <input
-            className={`${fieldClass} ${!isSpecComplete ? "bg-muted/50 cursor-not-allowed opacity-75" : ""}`}
-            placeholder="kg"
+            className={`${fieldClass} bg-muted/30 cursor-not-allowed opacity-90`}
+            placeholder={isSpecComplete ? "Calculating…" : "Complete specification first"}
+            readOnly
             disabled={!isSpecComplete}
-            {...register(`items.${index}.estimatedWeight`)}
+            value={autoEstimatedWeight}
           />
         </LeadField>
         <LeadField
@@ -1038,7 +1201,7 @@ export function LeadCreateForm({
       specs: Record<string, unknown>;
     }[];
   }[];
-  categories: { id: string; name: string }[];
+  categories: { id: string; name: string; code: string }[];
   uoms: { id: string; symbol: string }[];
   canManageProducts: boolean;
 }) {
@@ -1063,7 +1226,6 @@ export function LeadCreateForm({
       companyName: "",
       gstin: "",
       customerId: "",
-      orderType: "READY_STOCK",
       source: "PHONE",
       priority: "WARM",
       assigneeId: "",
@@ -1131,7 +1293,12 @@ export function LeadCreateForm({
           itemDescription: line.description || undefined,
           notes: line.remarks || undefined,
           mfgGrade: line.mfgGrade || undefined,
-          gaugeThicknessMm: line.gaugeThicknessMm || undefined,
+          thickness: line.specifications?.thickness || undefined,
+          gaugeThicknessMm:
+            line.gaugeThicknessMm?.trim() ||
+            line.specifications?.thicknessConvertedMm?.trim() ||
+            line.specifications?.thickness?.trim() ||
+            undefined,
           weightPerPieceGrams: line.weightPerPieceGrams || undefined,
           finish: line.finish || undefined,
           sizeOrCapacity: line.sizeOrCapacity || undefined,
@@ -1165,7 +1332,7 @@ export function LeadCreateForm({
           gstin: gstinRaw || undefined,
           customerId: values.customerId || undefined,
           source: values.source,
-          orderType: values.orderType,
+          orderType: deriveLeadOrderTypeFromBusinessCategories(mappedItems, categories),
           priority: values.priority,
           assigneeId: values.assigneeId || undefined,
           nextFollowUpAt: values.nextFollowUpAt || undefined,
@@ -1316,16 +1483,7 @@ export function LeadCreateForm({
             />
           </LeadField>
         </div>
-        <div className="mt-4 grid gap-4 md:grid-cols-3">
-          <LeadField label="Order type">
-            <select className={fieldClass} {...form.register("orderType")}>
-              {LEAD_ORDER_TYPES.map((value) => (
-                <option key={value} value={value}>
-                  {leadOrderTypeLabel(value)}
-                </option>
-              ))}
-            </select>
-          </LeadField>
+        <div className="mt-4 grid gap-4 md:grid-cols-2">
           <LeadField label="Source">
             <select className={fieldClass} {...form.register("source")}>
               {LEAD_SOURCES.filter((source) => source !== "WEBSITE").map(

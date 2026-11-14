@@ -4,16 +4,19 @@ import type { SessionUser } from "@/lib/auth/session";
 import { plantIdsForSession } from "@/lib/access";
 import { AppError } from "@/lib/errors";
 import { uuidv7 } from "@/lib/ids";
-import { audit, nextNumber, notifyUsers, runCommand } from "@/lib/inventory/post";
+import { audit, nextNumber, notifyUsers, runCommand, usersWithPermission } from "@/lib/inventory/post";
 import { allow } from "@/modules/shared/allow";
 import { addLeadActivity, recordLeadStatus } from "@/modules/leads/record";
 import { canTransitionLead } from "@/modules/leads/status";
+import { leadEmailSubject } from "@/modules/leads/lead-email";
+import { queueCustomerNotification } from "@/modules/leads/customer-notify";
+import { deliverCustomerNotificationById } from "@/modules/leads/deliver-customer-email";
 import { defaultValidUntil } from "@/modules/leads/quotations/config";
 import {
   computeLineAmount,
   computeQuotationTotals,
   lineDiscountPct,
-  quotationNeedsDiscountApproval,
+  quotationNeedsPricingApproval,
 } from "@/modules/leads/quotations/pricing";
 import {
   quotationCanRevise,
@@ -345,7 +348,7 @@ export async function createQuotationDraft(
 
       const itemRows = await buildItemRows(tx, plantId, lines);
       const totals = headerTotals(input, itemRows);
-      const approvalRequired = quotationNeedsDiscountApproval(
+      const approvalRequired = quotationNeedsPricingApproval(
         itemRows.map((row) => ({
           listRate: row.listRate?.toString(),
           rate: row.rate.toString(),
@@ -432,7 +435,7 @@ export async function updateQuotationDraft(
 
       const itemRows = await buildItemRows(tx, existing.plantId, mergedLines);
       const totals = headerTotals(input, itemRows);
-      const approvalRequired = quotationNeedsDiscountApproval(
+      const approvalRequired = quotationNeedsPricingApproval(
         itemRows.map((row) => ({
           listRate: row.listRate?.toString(),
           rate: row.rate.toString(),
@@ -473,6 +476,21 @@ export async function updateQuotationDraft(
         description: "Quotation draft pricing saved on lead items (market & offer rates).",
       });
 
+      if (approvalRequired && !existing.approvedAt) {
+        const approverIds = await usersWithPermission(tx, existing.plantId, "quotation.approve");
+        const notifyIds = approverIds.filter((id) => id !== session.userId);
+        if (notifyIds.length) {
+          await notifyUsers(tx, {
+            userIds: notifyIds,
+            type: "quotation.pending_approval",
+            title: `Quotation pricing needs approval`,
+            body: `${existing.quotationNumber} v${existing.version} — offer prices updated on lead.`,
+            href: `/leads/${existing.leadId}`,
+            payload: { quotationId, leadId: existing.leadId },
+          });
+        }
+      }
+
       return { id: quotationId };
     },
   });
@@ -489,8 +507,12 @@ export async function approveQuotation(session: SessionUser, quotationId: string
       const quote = await tx.quotation.findFirst({ where: { id: quotationId, plantId: { in: plantIds } } });
       if (!quote) throw new AppError(404, "NOT_FOUND", "Quotation not found.");
       if (quote.status !== "DRAFT") throw new AppError(409, "INVALID_STATE", "Only draft quotations can be approved.");
-      if (!quote.approvalRequired) {
-        throw new AppError(400, "VALIDATION", "This quotation does not require manager approval.");
+      if (quote.approvedAt) {
+        throw new AppError(409, "INVALID_STATE", "This quotation is already approved.");
+      }
+      const itemCount = await tx.quotationItem.count({ where: { quotationId } });
+      if (!itemCount) {
+        throw new AppError(400, "VALIDATION", "Add quotation lines with offer rates before approval.");
       }
       await tx.quotation.update({
         where: { id: quotationId },
@@ -528,11 +550,11 @@ export async function sendQuotation(
       if (!quotationCanSend(quote.status)) {
         throw new AppError(409, "INVALID_STATE", "Only draft quotations can be sent.");
       }
-      if (quote.approvalRequired && !quote.approvedAt) {
+      if (!quote.approvedAt) {
         throw new AppError(
           409,
           "APPROVAL_REQUIRED",
-          "Discount exceeds the allowed limit. A manager must approve before sending.",
+          "Admin must approve pricing before sending to customer.",
         );
       }
       if (quote.validUntil.getTime() < Date.now()) {
@@ -566,8 +588,38 @@ export async function sendQuotation(
         fromRevision,
       );
 
-      return { id: quotationId, status: "SENT" as const };
+      let emailNotificationId: string | null = null;
+      if (input.sentVia === "EMAIL") {
+        const toEmail = quote.lead.email?.trim();
+        if (!toEmail) {
+          throw new AppError(400, "VALIDATION", "Lead has no email address. Use WhatsApp or manual send.");
+        }
+        const total = quote.total.toString();
+        const message =
+          `Dear ${quote.lead.customerName},\n\n` +
+          `Please find our quotation ${quote.quotationNumber} (version ${quote.version}) for your enquiry ${quote.lead.leadNumber}.\n` +
+          `Quoted total (incl. charges as per quote): ₹${total}.\n\n` +
+          `Our team will share the detailed PDF shortly. Contact us for any clarifications.\n\n` +
+          `Regards,\nSS Metals`;
+        emailNotificationId = await queueCustomerNotification(tx, {
+          plantId: quote.plantId,
+          leadId: quote.leadId,
+          channel: "email",
+          message,
+          toEmail,
+          subject: leadEmailSubject(quote.lead.leadNumber, `Quotation ${quote.quotationNumber}`),
+        });
+      }
+
+      return { id: quotationId, status: "SENT" as const, emailNotificationId };
     },
+  }).then(async (result) => {
+    if (result.emailNotificationId) {
+      void deliverCustomerNotificationById(result.emailNotificationId).catch((error) =>
+        console.error("[quotation.send.email]", result.emailNotificationId, error),
+      );
+    }
+    return { id: result.id, status: result.status };
   });
 }
 
@@ -625,7 +677,7 @@ export async function reviseQuotation(session: SessionUser, quotationId: string,
         loadingCharges: source.loadingCharges.toString(),
         gstPercent: source.gstPercent.toString(),
       });
-      const approvalRequired = quotationNeedsDiscountApproval(
+      const approvalRequired = quotationNeedsPricingApproval(
         itemRows.map((row) => ({
           listRate: row.listRate?.toString(),
           rate: row.rate.toString(),
@@ -659,6 +711,8 @@ export async function reviseQuotation(session: SessionUser, quotationId: string,
           includesMtc: source.includesMtc,
           thirdPartyInspection: source.thirdPartyInspection,
           approvalRequired,
+          approvedById: null,
+          approvedAt: null,
           createdById: session.userId,
           items: {
             create: itemRows.map(({ id: itemId, ...row }) => ({ id: itemId, ...row })),

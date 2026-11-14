@@ -18,7 +18,11 @@ export default async function NewLeadPage() {
         customers={customers}
         employees={employees.map((employee) => ({ id: employee.id, name: employee.name }))}
         products={catalog.products}
-        categories={catalog.categories.map((row) => ({ id: row.id, name: row.name }))}
+        categories={catalog.categories.map((row) => ({
+          id: row.id,
+          name: row.name,
+          code: row.code,
+        }))}
         uoms={uoms}
         canManageProducts={session.permissions.has("plant.manage")}
       />

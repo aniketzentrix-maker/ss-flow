@@ -58,7 +58,7 @@ export const PERMISSION_CATALOG: PermissionDef[] = [
   { code: "lead.manage", name: "Create and manage leads", module: "Sales Orders" },
   { code: "lead.verify", name: "Verify leads", module: "Sales Orders" },
   { code: "lead.convert", name: "Convert leads to sales orders", module: "Sales Orders" },
-  { code: "quotation.approve", name: "Approve discounted quotations", module: "Sales Orders" },
+  { code: "quotation.approve", name: "Approve quotation pricing", module: "Sales Orders" },
 
   { code: "employee.view", name: "View employees", module: "Employees" },
   { code: "employee.manage", name: "Manage employees", module: "Employees" },

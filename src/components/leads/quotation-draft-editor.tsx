@@ -9,6 +9,7 @@ import {
   computeQuotationTotals,
   lineDiscountPct,
   quotationNeedsDiscountApproval,
+  quotationNeedsPricingApproval,
 } from "@/modules/leads/quotations/pricing";
 import { quotationMaxDiscountPct } from "@/modules/leads/quotations/config";
 import { quotationLinePresentation } from "@/modules/leads/quotations/line-description";
@@ -182,7 +183,15 @@ export function QuotationDraftEditor({
     });
   }, [lines, freightAmount, loadingCharges, gstPercent]);
 
-  const needsApproval = useMemo(
+  const needsPricingApproval = useMemo(
+    () =>
+      quotationNeedsPricingApproval(
+        lines.map((line) => ({ listRate: line.marketRate || null, rate: line.offerRate || "0" })),
+      ),
+    [lines],
+  );
+
+  const deepDiscount = useMemo(
     () =>
       quotationNeedsDiscountApproval(
         lines.map((line) => ({ listRate: line.marketRate || null, rate: line.offerRate || "0" })),
@@ -441,8 +450,15 @@ export function QuotationDraftEditor({
         <p className="text-sm text-muted">
           Quotation total{" "}
           <span className="font-semibold text-foreground">₹{previewTotals.total}</span>
-          {needsApproval ? (
-            <span className="ml-2 text-xs text-amber-800 dark:text-amber-200">· approval required</span>
+          {needsPricingApproval ? (
+            <span className="ml-2 text-xs text-amber-800 dark:text-amber-200">
+              · admin approval required after save
+            </span>
+          ) : null}
+          {deepDiscount ? (
+            <span className="ml-2 text-xs text-amber-800 dark:text-amber-200">
+              · discount over {quotationMaxDiscountPct()}%
+            </span>
           ) : null}
         </p>
         {canEdit ? (

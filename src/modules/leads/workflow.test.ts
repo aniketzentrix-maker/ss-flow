@@ -35,14 +35,22 @@ test("verification is available before qualified or terminal states", () => {
 test("conversion is allowed from qualified, quote, negotiation, and sample approval", () => {
   const leadItemId = "d2719c81-5a66-45c6-a215-6c4131fb6c5d";
   const productId = "58b4ef2a-06bb-4470-92e1-f30a1c48c792";
+  const quotationId = "a1b2c3d4-e5f6-4789-a012-3456789abcde";
   assert.equal(leadCanConvert("VERIFIED"), true);
   assert.equal(leadCanConvert("QUOTATION_SENT"), true);
   assert.equal(leadCanConvert("NEGOTIATION"), true);
   assert.equal(leadCanConvert("SAMPLE_APPROVAL"), true);
   assert.equal(leadCanConvert("REJECTED"), false);
-  assert.equal(leadConvertSchema.safeParse({ lines: [{ leadItemId, productId }] }).success, true);
+  assert.equal(
+    leadConvertSchema.safeParse({ quotationId, lines: [{ leadItemId, productId }] }).success,
+    true,
+  );
+  assert.equal(leadConvertSchema.safeParse({ lines: [{ leadItemId, productId }] }).success, false);
   assert.equal(leadConvertSchema.safeParse({ lines: [] }).success, false);
-  assert.equal(leadConvertSchema.safeParse({ lines: [{ leadItemId: "bad-id" }] }).success, false);
+  assert.equal(
+    leadConvertSchema.safeParse({ quotationId, lines: [{ leadItemId: "bad-id" }] }).success,
+    false,
+  );
 });
 
 test("rejection and loss transitions require a reason", () => {

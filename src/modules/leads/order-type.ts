@@ -29,3 +29,19 @@ export function isCustomLeadOrder(orderType?: string | null) {
 export function leadOrderTypeLabel(orderType?: string | null) {
   return isCustomLeadOrder(orderType) ? "Custom / made-to-order" : "Ready stock";
 }
+
+/** Manufactured (MFG) lines imply custom / made-to-order; trading-only leads stay ready stock. */
+export function deriveLeadOrderTypeFromBusinessCategories(
+  items: { categoryId?: string | null }[],
+  categories: { id: string; code: string }[],
+): LeadOrderType {
+  const rootCodeById = new Map(
+    categories.map((c) => [c.id, c.code.trim().toUpperCase()]),
+  );
+  for (const item of items) {
+    const categoryId = item.categoryId?.trim();
+    if (!categoryId) continue;
+    if (rootCodeById.get(categoryId) === "MFG") return "CUSTOM";
+  }
+  return "READY_STOCK";
+}

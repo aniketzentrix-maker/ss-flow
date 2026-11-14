@@ -23,6 +23,12 @@ import { isFollowUpOverdue, leadStaleLevel } from "@/modules/leads/follow-up";
 import { LeadPossibleDuplicates } from "@/components/leads/lead-possible-duplicates";
 import { LeadQuotationsPanel } from "@/components/leads/lead-quotations-panel";
 import { LeadSentQuotationDownloads } from "@/components/leads/lead-sent-quotation-downloads";
+import { SpecConversionCell } from "@/components/leads/spec-conversion-cell";
+import {
+  inchDimensionDisplayParts,
+  INCH_CONVERTIBLE_SPEC_KEYS,
+  thicknessDisplayParts,
+} from "@/lib/domain/dimension-units";
 import { listSentQuotationsForLead } from "@/modules/leads/quotations/queries";
 import { materialAvailableQty } from "@/modules/leads/stock-check";
 import { leadOrderTypeLabel } from "@/modules/leads/order-type";
@@ -197,6 +203,15 @@ function formatItemDimensions(
   return parts.length ? parts.join(" · ") : "—";
 }
 
+function primaryInchDimensionKey(specs: SpecRecord): string | null {
+  for (const key of INCH_CONVERTIBLE_SPEC_KEYS) {
+    if (specs[key] != null && specs[key] !== "") return key;
+    const unitKey = `${key}InputUnit`;
+    if (specs[unitKey] === "inch") return key;
+  }
+  return null;
+}
+
 function specCell(entries: { label: string; value: string }[]) {
   if (!entries.length) return "—";
   return (
@@ -306,10 +321,16 @@ export default async function LeadDetailPage({
     );
     const finish = cleanValue(item.finish ?? specs.finish);
     const packing = cleanValue(item.packing);
-    const diameter =
-      specs.diameter != null && specs.diameter !== ""
-        ? cleanValue(specs.diameter)
+    const diameterKey = primaryInchDimensionKey(specs);
+    const diameterPlain =
+      diameterKey && specs[diameterKey] != null && specs[diameterKey] !== ""
+        ? cleanValue(specs[diameterKey])
         : "—";
+    const thicknessParts = thicknessDisplayParts(
+      specs,
+      item.gaugeThicknessMm?.toString() ?? item.product?.thickness?.toString(),
+    );
+    const diameterParts = diameterKey ? inchDimensionDisplayParts(diameterKey, specs) : null;
     const baseRow: LeadItemSpecRow = {
       specs,
       description: String(
@@ -321,11 +342,13 @@ export default async function LeadDetailPage({
       dimensions,
       sku,
       grade: cleanValue(item.mfgGrade ?? specs.grade ?? item.product?.grade),
-      thickness: cleanValue(
-        item.gaugeThicknessMm?.toString() ??
-          specs.thickness ??
-          item.product?.thickness?.toString(),
-      ),
+      thickness:
+        thicknessParts?.converted?.replace(/^Converted:\s*/i, "") ??
+        cleanValue(
+          item.gaugeThicknessMm?.toString() ??
+            specs.thickness ??
+            item.product?.thickness?.toString(),
+        ),
       mfgFinish: item.finish,
       mfgSizeOrCapacity: item.sizeOrCapacity,
       mfgPacking: item.packing,
@@ -340,7 +363,7 @@ export default async function LeadDetailPage({
       ...baseRow,
       finish,
       packing,
-      diameter,
+      diameter: diameterPlain,
     });
     const inlineSpecs = allSpecs.filter((entry) => !skipLabels.has(entry.label));
     return {
@@ -356,7 +379,9 @@ export default async function LeadDetailPage({
       dimensions,
       sku,
       finish,
-      diameter,
+      diameterPlain,
+      diameterParts,
+      thicknessParts,
       packing,
       inlineSpecs: specCell(inlineSpecs),
       quantity: item.quantity.toString(),
@@ -380,10 +405,10 @@ export default async function LeadDetailPage({
     description: row.description,
     sku: row.sku,
     grade: row.grade,
-    thickness: row.thickness,
+    thickness: <SpecConversionCell parts={row.thicknessParts} />,
     finish: row.finish,
     dimensions: row.dimensions,
-    diameter: row.diameter,
+    diameter: <SpecConversionCell parts={row.diameterParts} />,
     packing: row.packing,
     specifications: row.inlineSpecs,
     quantity: row.quantity,

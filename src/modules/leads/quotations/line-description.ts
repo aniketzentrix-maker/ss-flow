@@ -62,16 +62,30 @@ export function buildLeadItemLineSpecSummary(item: LeadItemLineSource): string {
   const grade = specString(item.mfgGrade ?? specs.grade ?? item.product?.grade);
   if (grade) parts.push(`Grade ${grade}`);
 
-  const thickness = specString(specs.thickness ?? item.gaugeThicknessMm?.toString());
-  if (thickness) parts.push(`${thickness} mm`);
+  const thickness = specString(
+    specs.thicknessConvertedMm ?? specs.thickness ?? item.gaugeThicknessMm?.toString(),
+  );
+  if (thickness) {
+    const gauge = specString(specs.thicknessGauge);
+    const asGauge = specs.thicknessInputUnit === "gauge" && gauge;
+    parts.push(asGauge ? `${gauge} SWG → ${thickness} mm` : `${thickness} mm`);
+  }
 
   const width = specString(specs.width);
   const length = specString(specs.length);
-  const diameter = specString(specs.diameter);
+  const diameterKeys = ["diameter", "wireDiameterMm", "innerDiameterMm", "outerDiameterMm"] as const;
+  const diameterKey = diameterKeys.find(
+    (key) => specString(specs[key]) || specs[`${key}InputUnit`] === "inch",
+  );
+  const diameter = diameterKey ? specString(specs[diameterKey]) : "";
   if (width && length) parts.push(`${width} × ${length} mm`);
   else if (width) parts.push(`W ${width} mm`);
   else if (length) parts.push(`L ${length} mm`);
-  else if (diameter) parts.push(`Ø ${diameter} mm`);
+  else if (diameter && diameterKey) {
+    const inch = specString(specs[`${diameterKey}Inch`]);
+    const asInch = specs[`${diameterKey}InputUnit`] === "inch" && inch;
+    parts.push(asInch ? `Ø ${inch}" → ${diameter} mm` : `Ø ${diameter} mm`);
+  }
 
   const finish = specString(specs.finish);
   if (finish) parts.push(String(finish));

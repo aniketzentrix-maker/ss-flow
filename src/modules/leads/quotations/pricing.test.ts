@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { computeLineAmount, lineDiscountPct, quotationNeedsDiscountApproval } from "./pricing";
+import {
+  computeLineAmount,
+  lineDiscountPct,
+  quotationNeedsDiscountApproval,
+  quotationNeedsPricingApproval,
+} from "./pricing";
 
 describe("quotation pricing", () => {
   it("computes discount percent from list and offered rate", () => {
@@ -23,5 +28,12 @@ describe("quotation pricing", () => {
 
   it("computes line amount", () => {
     assert.equal(computeLineAmount("10", "25.5"), "255.00");
+  });
+
+  it("requires admin approval for any offer rate", () => {
+    assert.equal(quotationNeedsPricingApproval([{ rate: "100" }]), true);
+    assert.equal(quotationNeedsPricingApproval([{ rate: "0" }]), true);
+    assert.equal(quotationNeedsPricingApproval([{ rate: "" }]), false);
+    assert.equal(quotationNeedsPricingApproval([]), false);
   });
 });

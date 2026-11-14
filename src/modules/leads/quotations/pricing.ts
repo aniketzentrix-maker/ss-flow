@@ -23,6 +23,17 @@ export function quotationNeedsDiscountApproval(lines: QuotationLineInput[]) {
   return false;
 }
 
+/** Admin must approve any customer-facing offer price before send. */
+export function quotationNeedsPricingApproval(lines: QuotationLineInput[]) {
+  for (const line of lines) {
+    const raw = line.rate?.trim();
+    if (!raw) continue;
+    const rate = Number(raw);
+    if (Number.isFinite(rate) && rate >= 0) return true;
+  }
+  return false;
+}
+
 export function computeLineAmount(qty: string, rate: string) {
   const q = Number(qty);
   const r = Number(rate);
