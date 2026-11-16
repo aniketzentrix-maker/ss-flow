@@ -205,6 +205,7 @@ test("Delivery dates schema parses partial updates and null values safely", () =
 
   const convertParse = leadConvertSchema.safeParse({
     promisedDate: "2026-11-25",
+    quotationId: "a1b2c3d4-e5f6-4789-a012-3456789abcde",
     lines: [
       {
         leadItemId: "0194bc02-1234-7000-8000-000000000001",

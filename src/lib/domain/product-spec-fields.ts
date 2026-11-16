@@ -37,6 +37,22 @@ export const ALWAYS_HIDDEN_SPEC_KEYS = [
   "variantDisplayName",
   "seedMetadata",
   "sku",
+  "thicknessInputUnit",
+  "thicknessGauge",
+  "thicknessGaugeSystem",
+  "thicknessConvertedMm",
+  "diameterInputUnit",
+  "diameterInch",
+  "diameterConvertedMm",
+  "wireDiameterMmInputUnit",
+  "wireDiameterMmInch",
+  "wireDiameterMmConvertedMm",
+  "innerDiameterMmInputUnit",
+  "innerDiameterMmInch",
+  "innerDiameterMmConvertedMm",
+  "outerDiameterMmInputUnit",
+  "outerDiameterMmInch",
+  "outerDiameterMmConvertedMm",
 ] as const;
 
 /** Fields dropped from new lead items; old records may still contain them. */
