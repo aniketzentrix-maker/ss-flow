@@ -80,14 +80,8 @@ export function renderQuotationHtml(quote: Quote, options?: QuotationRenderOptio
   const gstAmount = tax?.gstAmount ?? "—";
 
   const termsBlock = [
-    quote.paymentTerms ? `<li><strong>Payment:</strong> ${escapeHtml(quote.paymentTerms)}</li>` : "",
-    quote.deliveryTerms ? `<li><strong>Delivery:</strong> ${escapeHtml(quote.deliveryTerms)}</li>` : "",
     quote.deliveryTimeDays != null
       ? `<li><strong>Delivery timeline:</strong> ${quote.deliveryTimeDays} days from order confirmation</li>`
-      : "",
-    quote.includesMtc ? `<li>Material test certificate (MTC) included with dispatch</li>` : "",
-    quote.thirdPartyInspection
-      ? `<li>Third-party inspection as per agreed scope</li>`
       : "",
   ].filter(Boolean);
 
