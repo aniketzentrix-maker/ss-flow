@@ -18,15 +18,11 @@ type QuotationDetail = {
   id: string;
   status: string;
   validUntil: string;
-  paymentTerms: string | null;
-  deliveryTerms: string | null;
   deliveryTimeDays: number | null;
   freightAmount: string;
   loadingCharges: string;
   gstPercent: string;
   notes: string | null;
-  includesMtc: boolean;
-  thirdPartyInspection: boolean;
   items: {
     id: string;
     leadItemId: string | null;
@@ -125,15 +121,11 @@ export function QuotationDraftEditor({
   const [success, setSuccess] = useState<string | null>(null);
 
   const [validUntil, setValidUntil] = useState("");
-  const [paymentTerms, setPaymentTerms] = useState("");
-  const [deliveryTerms, setDeliveryTerms] = useState("");
   const [deliveryTimeDays, setDeliveryTimeDays] = useState("");
   const [freightAmount, setFreightAmount] = useState("0");
   const [loadingCharges, setLoadingCharges] = useState("0");
   const [gstPercent, setGstPercent] = useState("18");
   const [notes, setNotes] = useState("");
-  const [includesMtc, setIncludesMtc] = useState(false);
-  const [thirdPartyInspection, setThirdPartyInspection] = useState(false);
   const [lines, setLines] = useState<LineDraft[]>([]);
 
   const loadDetail = useCallback(async () => {
@@ -152,15 +144,11 @@ export function QuotationDraftEditor({
         return;
       }
       setValidUntil(toDatetimeLocalValue(data.validUntil));
-      setPaymentTerms(data.paymentTerms ?? "");
-      setDeliveryTerms(data.deliveryTerms ?? "");
       setDeliveryTimeDays(data.deliveryTimeDays != null ? String(data.deliveryTimeDays) : "");
       setFreightAmount(data.freightAmount || "0");
       setLoadingCharges(data.loadingCharges || "0");
       setGstPercent(data.gstPercent || "18");
       setNotes(data.notes ?? "");
-      setIncludesMtc(data.includesMtc);
-      setThirdPartyInspection(data.thirdPartyInspection);
       setLines(linesFromDetail(data.items));
     } finally {
       setLoading(false);
@@ -235,15 +223,15 @@ export function QuotationDraftEditor({
 
     const payload = {
       validUntil: fromDatetimeLocalValue(validUntil),
-      paymentTerms: paymentTerms.trim() || undefined,
-      deliveryTerms: deliveryTerms.trim() || undefined,
       deliveryTimeDays: deliveryTimeDays.trim() ? Number(deliveryTimeDays) : undefined,
       freightAmount: freightAmount.trim() || "0",
       loadingCharges: loadingCharges.trim() || "0",
       gstPercent: gstPercent.trim() || "18",
       notes: notes.trim() || undefined,
-      includesMtc,
-      thirdPartyInspection,
+      includesMtc: false,
+      thirdPartyInspection: false,
+      paymentTerms: undefined,
+      deliveryTerms: undefined,
       items: lines.map((line) => ({
         leadItemId: line.leadItemId,
         productId: line.productId,
@@ -426,24 +414,10 @@ export function QuotationDraftEditor({
               onChange={(e) => setLoadingCharges(e.target.value)}
             />
           </Field>
-          <Field label="Payment terms">
-            <input className={controlClass} value={paymentTerms} disabled={!canEdit} onChange={(e) => setPaymentTerms(e.target.value)} />
-          </Field>
-          <Field label="Delivery terms">
-            <input className={controlClass} value={deliveryTerms} disabled={!canEdit} onChange={(e) => setDeliveryTerms(e.target.value)} />
-          </Field>
           <Field label="Notes">
             <textarea className={`${controlClass} min-h-16 py-2`} value={notes} disabled={!canEdit} onChange={(e) => setNotes(e.target.value)} />
           </Field>
         </div>
-        <label className="mt-2 flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={includesMtc} disabled={!canEdit} onChange={(e) => setIncludesMtc(e.target.checked)} />
-          MTC included
-        </label>
-        <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={thirdPartyInspection} disabled={!canEdit} onChange={(e) => setThirdPartyInspection(e.target.checked)} />
-          Third-party inspection
-        </label>
       </details>
 
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-muted/20 px-3 py-2">
