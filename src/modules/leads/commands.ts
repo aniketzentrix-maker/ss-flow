@@ -157,11 +157,10 @@ async function createLeadItems(tx: Tx, leadId: string, items: LeadItemInput[]) {
         where: { id: line.productVariantId, plantId: lead.plantId, isActive: true, product: { isActive: true } },
         select: { id: true, productId: true, materialMasterId: true, displayName: true, attributes: true, grade: true, finish: true, thicknessMm: true, widthMm: true, lengthMm: true, diameterMm: true, product: { select: { categoryId: true, sku: true, name: true, category: { select: { code: true } } } } },
       });
-      const expectedMaterialId = variant.materialMasterId ?? variant.id;
       if (
         !variant ||
         !line.productId ||
-        line.productId !== expectedMaterialId ||
+        line.productId !== (variant.materialMasterId ?? variant.id) ||
         (parentProductId && parentProductId !== variant.productId)
       ) {
         throw new AppError(400, "VALIDATION", "Choose an active variant that belongs to the selected parent product.");

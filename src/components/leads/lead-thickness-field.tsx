@@ -53,7 +53,7 @@ export function LeadThicknessField({
     unit === "gauge" && gaugeRaw ? gaugeInputToThicknessMm(gaugeRaw) : null;
 
   function setUnit(next: ThicknessInputUnit) {
-    const nextSpecs = { ...specs, [THICKNESS_INPUT_UNIT_SPEC_KEY]: next };
+    const nextSpecs: Record<string, string> = { ...specs, [THICKNESS_INPUT_UNIT_SPEC_KEY]: next };
     if (next === "mm") {
       delete nextSpecs[THICKNESS_GAUGE_SPEC_KEY];
       delete nextSpecs[THICKNESS_GAUGE_SYSTEM_SPEC_KEY];
@@ -70,7 +70,7 @@ export function LeadThicknessField({
   }
 
   function applyMmThickness(thickness: string) {
-    const next = { ...specs, thickness };
+    const next: Record<string, string> = { ...specs, thickness };
     next[THICKNESS_INPUT_UNIT_SPEC_KEY] = "mm";
     delete next[THICKNESS_GAUGE_SPEC_KEY];
     delete next[THICKNESS_GAUGE_SYSTEM_SPEC_KEY];
@@ -83,14 +83,18 @@ export function LeadThicknessField({
   function applyGauge(raw: string) {
     const mm = gaugeInputToThicknessMm(raw);
     if (!raw.trim()) {
-      const next = { ...specs, [THICKNESS_INPUT_UNIT_SPEC_KEY]: "gauge", [THICKNESS_GAUGE_SPEC_KEY]: "" };
+      const next: Record<string, string> = {
+        ...specs,
+        [THICKNESS_INPUT_UNIT_SPEC_KEY]: "gauge",
+        [THICKNESS_GAUGE_SPEC_KEY]: "",
+      };
       delete next.thickness;
       onSpecsChange(next);
       onGaugeThicknessMm("");
       return;
     }
     if (mm == null) {
-      const next = {
+      const next: Record<string, string> = {
         ...specs,
         [THICKNESS_INPUT_UNIT_SPEC_KEY]: "gauge",
         [THICKNESS_GAUGE_SYSTEM_SPEC_KEY]: "swg",
@@ -102,7 +106,7 @@ export function LeadThicknessField({
     }
     const exactMm = formatThicknessMm(mm);
     const catalog = snapThicknessToOptions(mm, options);
-    const next = {
+    const next: Record<string, string> = {
       ...specs,
       [THICKNESS_INPUT_UNIT_SPEC_KEY]: "gauge",
       [THICKNESS_GAUGE_SYSTEM_SPEC_KEY]: "swg",

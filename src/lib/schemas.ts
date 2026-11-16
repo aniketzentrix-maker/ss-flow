@@ -831,7 +831,10 @@ export const leadStatusChangeSchema = z
       });
       return;
     }
-    if (!isLostReasonCodeForStatus(value.status, code)) {
+    if (
+      (value.status === "LOST" || value.status === "REJECTED") &&
+      !isLostReasonCodeForStatus(value.status, code)
+    ) {
       ctx.addIssue({
         code: "custom",
         path: ["lostReasonCode"],

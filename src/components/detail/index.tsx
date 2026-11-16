@@ -187,10 +187,24 @@ export function StatusHistoryList({ items }: { items: { from: string | null; to:
   </li>)}</ol>;
 }
 
-export function CalloutBanner({ title, description, action }: { title: string; description: string; action: React.ReactNode }) {
-  return <section className="flex flex-col gap-3 rounded-lg border border-success-border bg-success-soft px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between">
-    <div><h2 className="text-[11px] font-bold text-success">{title}</h2><p className="text-[9px] text-success">{description}</p></div>{action}
-  </section>;
+export function CalloutBanner({
+  title,
+  description,
+  action,
+}: {
+  title: string;
+  description: React.ReactNode;
+  action: React.ReactNode;
+}) {
+  return (
+    <section className="flex flex-col gap-3 rounded-lg border border-success-border bg-success-soft px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between">
+      <div>
+        <h2 className="text-[11px] font-bold text-success">{title}</h2>
+        <div className="text-[9px] text-success">{description}</div>
+      </div>
+      {action}
+    </section>
+  );
 }
 
 export function DetailActionLink({ href, children }: { href: string; children: React.ReactNode }) {

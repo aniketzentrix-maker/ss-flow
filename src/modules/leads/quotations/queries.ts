@@ -47,7 +47,7 @@ export const quotationDetailInclude = {
 const SENT_QUOTATION_STATUSES = ["SENT", "ACCEPTED", "EXPIRED", "SUPERSEDED"] as const;
 
 export async function listSentQuotationsForLead(leadId: string, plantIds: string[]) {
-  return prisma.quotation.findMany({
+  const rows = await prisma.quotation.findMany({
     where: {
       leadId,
       plantId: { in: plantIds },
@@ -65,6 +65,10 @@ export async function listSentQuotationsForLead(leadId: string, plantIds: string
       total: true,
     },
   });
+  return rows.map((row) => ({
+    ...row,
+    sentAt: row.sentAt as Date,
+  }));
 }
 
 export async function listLeadQuotations(leadId: string, plantIds: string[]) {
