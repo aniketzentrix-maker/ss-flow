@@ -39,6 +39,7 @@ import {
   leadIdentityPatch,
 } from "@/modules/leads/duplicates";
 import { normalizeLeadOrderType } from "@/modules/leads/order-type";
+import { resolveOrCreateCustomerForLead } from "@/modules/leads/resolve-customer";
 import { normalizeLeadPriority } from "@/modules/leads/status";
 
 type Tx = Prisma.TransactionClient;
@@ -101,6 +102,8 @@ export type LeadItemInput = {
   inStock?: boolean;
   estimatedLeadTimeDays?: number;
   expectedDeliveryDate?: string;
+  requiredDeliveryDate?: string;
+  promisedDeliveryDate?: string;
 };
 
 function leadItemMfgData(line: LeadItemInput) {
@@ -218,8 +221,15 @@ async function createLeadItems(tx: Tx, leadId: string, items: LeadItemInput[]) {
         priceFinalised: line.priceFinalised ? new Decimal(line.priceFinalised) : null,
         estimatedWeight: line.estimatedWeight ? new Decimal(line.estimatedWeight) : null,
         ...leadItemMfgData(line),
-        expectedDeliveryDate: line.expectedDeliveryDate?.trim()
-          ? new Date(line.expectedDeliveryDate.trim())
+        requiredDeliveryDate: line.requiredDeliveryDate?.trim()
+          ? new Date(line.requiredDeliveryDate.trim())
+          : null,
+        promisedDeliveryDate: line.promisedDeliveryDate?.trim()
+          ? new Date(line.promisedDeliveryDate.trim())
+          : null,
+        // Keep expectedDeliveryDate in sync with required for quotations / legacy UI.
+        expectedDeliveryDate: (line.requiredDeliveryDate?.trim() || line.expectedDeliveryDate?.trim())
+          ? new Date((line.requiredDeliveryDate?.trim() || line.expectedDeliveryDate!.trim()))
           : null,
         specifications: specs as object,
         notes: line.notes ?? null,
@@ -274,10 +284,6 @@ export async function createLeadManual(
     route: "lead.create",
     key,
     run: async (tx) => {
-      if (input.customerId) {
-        const customer = await tx.customer.findFirst({ where: { id: input.customerId, plantId } });
-        if (!customer) throw new AppError(400, "VALIDATION", "Customer not found.");
-      }
       if (input.assigneeId) {
         const emp = await tx.employee.findFirst({ where: { id: input.assigneeId, plantId } });
         if (!emp) throw new AppError(400, "VALIDATION", "Assignee not found.");
@@ -292,16 +298,44 @@ export async function createLeadManual(
       if (!isValidGstin(input.gstin)) {
         throw new AppError(400, "VALIDATION", "Enter a valid 15-character GSTIN.");
       }
-      const duplicates = await findDuplicateMatches(tx, plantId, {
-        phone: input.phone,
-        email: input.email,
-        gstin: input.gstin,
-      });
-      if (duplicates.length && !input.createAnyway) {
-        throw new AppError(409, "DUPLICATE_CANDIDATES", "Possible duplicate lead or customer found.", {
-          matches: duplicates,
+      // Existing customer (dropdown): allow many leads, including same email.
+      // New customer: soft-warn on phone/GSTIN; email uniqueness is enforced when creating the customer/user.
+      if (!input.customerId) {
+        const duplicates = await findDuplicateMatches(tx, plantId, {
+          phone: input.phone,
+          gstin: input.gstin,
         });
+        if (duplicates.length && !input.createAnyway) {
+          throw new AppError(409, "DUPLICATE_CANDIDATES", "Possible duplicate lead or customer found.", {
+            matches: duplicates,
+          });
+        }
       }
+      const customerName = input.contactPerson?.trim() || input.customerName.trim();
+      const customerId = await resolveOrCreateCustomerForLead(
+        tx,
+        plantId,
+        {
+          customerId: input.customerId,
+          name: input.companyName?.trim() || customerName,
+          phone: input.phone,
+          email: input.email,
+        },
+        session.userId,
+      );
+      const itemRequiredDates = input.items
+        .map((line) => line.requiredDeliveryDate?.trim())
+        .filter((value): value is string => Boolean(value))
+        .sort();
+      const itemPromisedDates = input.items
+        .map((line) => line.promisedDeliveryDate?.trim())
+        .filter((value): value is string => Boolean(value))
+        .sort();
+      // Lead-level dates = earliest per-product dates (used on convert / summary).
+      const requiredDeliveryDate =
+        input.requiredDeliveryDate?.trim() || itemRequiredDates[0] || undefined;
+      const promisedDeliveryDate =
+        input.promisedDeliveryDate?.trim() || itemPromisedDates[0] || undefined;
       const priority = normalizeLeadPriority(input.priority);
       const leadNumber = await nextNumber(tx, plantId, "LD");
       const id = uuidv7();
@@ -310,7 +344,7 @@ export async function createLeadManual(
           id,
           plantId,
           leadNumber,
-          customerName: input.contactPerson?.trim() || input.customerName.trim(),
+          customerName,
           email: input.email?.trim() || null,
           ...leadIdentityPatch({
             phone: input.phone,
@@ -318,7 +352,7 @@ export async function createLeadManual(
             gstin: input.gstin,
           }),
           companyName: input.companyName?.trim() || null,
-          customerId: input.customerId ?? null,
+          customerId,
           source: input.source,
           orderType: normalizeLeadOrderType(input.orderType),
           status: "NEW",
@@ -339,8 +373,8 @@ export async function createLeadManual(
           address: input.address?.trim() || null,
           attendedById: input.attendedById ?? null,
           officeRemarks: input.officeRemarks ?? null,
-          requiredDeliveryDate: input.requiredDeliveryDate ? new Date(input.requiredDeliveryDate) : null,
-          promisedDeliveryDate: input.promisedDeliveryDate ? new Date(input.promisedDeliveryDate) : null,
+          requiredDeliveryDate: requiredDeliveryDate ? new Date(requiredDeliveryDate) : null,
+          promisedDeliveryDate: promisedDeliveryDate ? new Date(promisedDeliveryDate) : null,
           result: input.result ?? "PENDING",
           resultReason: input.resultReason?.trim() || null,
           createdById: session.userId,

@@ -1539,6 +1539,8 @@ model LeadItem {
   inStock         Boolean?        @map("in_stock")
   estimatedLeadTimeDays Int?      @map("estimated_lead_time_days")
   expectedDeliveryDate DateTime?  @map("expected_delivery_date") @db.Date
+  requiredDeliveryDate DateTime?  @map("required_delivery_date") @db.Date
+  promisedDeliveryDate DateTime?  @map("promised_delivery_date") @db.Date
   specifications  Json            @default("{}")
   notes           String?
   lead            Lead            @relation(fields: [leadId], references: [id], onDelete: Cascade)

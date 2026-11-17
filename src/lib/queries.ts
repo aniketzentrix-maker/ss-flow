@@ -697,6 +697,51 @@ export async function listSalesOrderCustomers(plantIds: string[]) {
   }));
 }
 
+/** Customers for lead create, with fields to autofill Query & customer information. */
+export async function listLeadFormCustomers(plantIds: string[]) {
+  const rows = await prisma.customer.findMany({
+    where: { plantId: { in: plantIds } },
+    include: {
+      portalUser: { select: { email: true, name: true, phone: true } },
+      leads: {
+        where: { deletedAt: null },
+        orderBy: { createdAt: "desc" },
+        take: 1,
+        select: {
+          contactPerson: true,
+          contactDesignation: true,
+          companyName: true,
+          email: true,
+          phone: true,
+          address: true,
+          gstin: true,
+          customerName: true,
+        },
+      },
+    },
+    orderBy: { name: "asc" },
+  });
+  return rows.map((row) => {
+    const lead = row.leads[0];
+    return {
+      id: row.id,
+      code: row.code,
+      name: row.name,
+      contactPerson:
+        lead?.contactPerson?.trim() ||
+        lead?.customerName?.trim() ||
+        row.portalUser?.name?.trim() ||
+        row.name,
+      contactDesignation: lead?.contactDesignation?.trim() || "",
+      companyName: lead?.companyName?.trim() || row.name,
+      phone: lead?.phone?.trim() || row.phone?.trim() || row.portalUser?.phone?.trim() || "",
+      email: lead?.email?.trim() || row.portalUser?.email?.trim() || "",
+      address: lead?.address?.trim() || "",
+      gstin: lead?.gstin?.trim() || "",
+    };
+  });
+}
+
 /** Sellable stock SKUs from product masters (catalog / materials), not only utensil category. */
 export async function listSalesOrderProducts(plantIds: string[]) {
   const rows = await prisma.materialMaster.findMany({

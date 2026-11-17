@@ -34,7 +34,12 @@ import { usePost } from "@/components/use-post";
 import type { DuplicateMatch } from "@/modules/leads/duplicates";
 import { deriveLeadOrderTypeFromBusinessCategories, LEAD_GRADE_OPTIONS } from "@/modules/leads/order-type";
 import { estimateLeadItemWeightKg } from "@/modules/leads/estimate-item-weight";
-import { LEAD_PRIORITIES, LEAD_SOURCES, leadSourceLabel } from "@/modules/leads/status";
+import {
+  LEAD_PRIORITIES,
+  LEAD_SOURCES,
+  leadPriorityLabel,
+  leadSourceLabel,
+} from "@/modules/leads/status";
 
 /** Re-enable when manufacturing & commercial fields should show on lead create. */
 const SHOW_LEAD_ITEM_MFG_COMMERCIAL = false;
@@ -108,7 +113,8 @@ type LeadItemValues = {
   logoRequired: boolean;
   artworkUrl: string;
   pricingBasis: "" | "PER_KG" | "PER_PIECE";
-  expectedDeliveryDate: string;
+  requiredDeliveryDate: string;
+  promisedDeliveryDate: string;
 };
 
 type FormValues = {
@@ -127,9 +133,6 @@ type FormValues = {
   assigneeId: string;
   nextFollowUpAt: string;
   notes: string;
-  requiredDeliveryDate: string;
-  promisedDeliveryDate: string;
-  customerRemarks: string;
   items: LeadItemValues[];
   attendedById: string;
   result: "PENDING" | "SUCCESS" | "FAILURE";
@@ -176,7 +179,8 @@ function emptyItem(uom: string): LeadItemValues {
     logoRequired: false,
     artworkUrl: "",
     pricingBasis: "",
-    expectedDeliveryDate: "",
+    requiredDeliveryDate: "",
+    promisedDeliveryDate: "",
   };
 }
 
@@ -410,6 +414,15 @@ function LeadItemFields({
   const uom = useWatch({ control, name: `items.${index}.uom` });
   const quantity = useWatch({ control, name: `items.${index}.quantity` }) ?? "";
   const mfgGrade = useWatch({ control, name: `items.${index}.mfgGrade` }) ?? "";
+  const itemRequiredDeliveryDate =
+    useWatch({ control, name: `items.${index}.requiredDeliveryDate` }) ?? "";
+  const itemPromisedDeliveryDate =
+    useWatch({ control, name: `items.${index}.promisedDeliveryDate` }) ?? "";
+  const isItemPromisedLate = Boolean(
+    itemRequiredDeliveryDate &&
+      itemPromisedDeliveryDate &&
+      itemPromisedDeliveryDate > itemRequiredDeliveryDate,
+  );
 
   const visibleProducts = products.filter(
     (product) => !categoryId || product.categoryId === categoryId,
@@ -1081,16 +1094,32 @@ function LeadItemFields({
           />
         </LeadField>
         <LeadField
-          label="Expected delivery"
-          detail="When this product should reach the customer"
+          label="Required delivery"
+          detail="Customer demand for this product"
         >
           <input
             className={fieldClass}
             type="date"
             disabled={!isSpecComplete}
-            {...register(`items.${index}.expectedDeliveryDate`)}
+            {...register(`items.${index}.requiredDeliveryDate`)}
           />
         </LeadField>
+        <LeadField
+          label="Promised delivery"
+          detail="Company commitment for this product"
+        >
+          <input
+            className={fieldClass}
+            type="date"
+            disabled={!isSpecComplete}
+            {...register(`items.${index}.promisedDeliveryDate`)}
+          />
+        </LeadField>
+        {isItemPromisedLate ? (
+          <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-700/50 dark:bg-amber-950/30 dark:text-amber-300 md:col-span-4">
+            <span className="font-semibold">Notice:</span> Promised delivery ({itemPromisedDeliveryDate}) is later than required delivery ({itemRequiredDeliveryDate}) for this product.
+          </div>
+        ) : null}
         <LeadField label="Description" className="md:col-span-2">
           <input
             className={fieldClass}
@@ -1176,16 +1205,31 @@ function LeadItemFields({
   );
 }
 
+type LeadFormCustomer = {
+  id: string;
+  name: string;
+  code?: string;
+  contactPerson: string;
+  contactDesignation: string;
+  companyName: string;
+  phone: string;
+  email: string;
+  address: string;
+  gstin: string;
+};
+
 export function LeadCreateForm({
   customers,
   employees,
+  defaultAssigneeId = "",
   products,
   categories,
   uoms,
   canManageProducts,
 }: {
-  customers: { id: string; name: string; code?: string }[];
+  customers: LeadFormCustomer[];
   employees: { id: string; name: string }[];
+  defaultAssigneeId?: string;
   products: {
     id: string;
     name: string;
@@ -1228,12 +1272,12 @@ export function LeadCreateForm({
       customerId: "",
       source: "PHONE",
       priority: "WARM",
-      assigneeId: "",
+      assigneeId:
+        defaultAssigneeId && employees.some((employee) => employee.id === defaultAssigneeId)
+          ? defaultAssigneeId
+          : "",
       nextFollowUpAt: "",
       notes: "",
-      requiredDeliveryDate: "",
-      promisedDeliveryDate: "",
-      customerRemarks: "",
       items: [emptyItem(defaultUom)],
       attendedById: "",
       result: "PENDING",
@@ -1247,13 +1291,32 @@ export function LeadCreateForm({
   });
   const result = useWatch({ control: form.control, name: "result" });
   const priority = useWatch({ control: form.control, name: "priority" });
-  const requiredDeliveryDate = useWatch({ control: form.control, name: "requiredDeliveryDate" });
-  const promisedDeliveryDate = useWatch({ control: form.control, name: "promisedDeliveryDate" });
-  const isPromisedLate = Boolean(
-    requiredDeliveryDate &&
-    promisedDeliveryDate &&
-    promisedDeliveryDate > requiredDeliveryDate
-  );
+  const selectedCustomerId = useWatch({ control: form.control, name: "customerId" });
+  const selectedCustomer = customers.find((row) => row.id === selectedCustomerId) ?? null;
+
+  function applyCustomerSelection(customerId: string) {
+    form.setValue("customerId", customerId);
+    setDuplicateMatches([]);
+    if (!customerId) {
+      form.setValue("contactPerson", "");
+      form.setValue("contactDesignation", "");
+      form.setValue("companyName", "");
+      form.setValue("phone", "");
+      form.setValue("email", "");
+      form.setValue("address", "");
+      form.setValue("gstin", "");
+      return;
+    }
+    const customer = customers.find((row) => row.id === customerId);
+    if (!customer) return;
+    form.setValue("contactPerson", customer.contactPerson);
+    form.setValue("contactDesignation", customer.contactDesignation);
+    form.setValue("companyName", customer.companyName);
+    form.setValue("phone", customer.phone);
+    form.setValue("email", customer.email);
+    form.setValue("address", customer.address);
+    form.setValue("gstin", customer.gstin);
+  }
 
   async function submitLead(values: FormValues, forceCreate = false) {
         const incompleteSelection = values.items.findIndex(
@@ -1306,15 +1369,12 @@ export function LeadCreateForm({
           logoRequired: line.logoRequired || undefined,
           artworkUrl: line.artworkUrl || undefined,
           pricingBasis: line.pricingBasis || undefined,
-          expectedDeliveryDate: line.expectedDeliveryDate?.trim() || undefined,
+          requiredDeliveryDate: line.requiredDeliveryDate?.trim() || undefined,
+          promisedDeliveryDate: line.promisedDeliveryDate?.trim() || undefined,
         }));
         const filledItems = mappedItems.filter(
           (line) => line.productId || line.itemDescription || line.size,
         );
-        const noteParts = [
-          values.notes.trim(),
-          values.customerRemarks.trim(),
-        ].filter(Boolean);
 
         const payload = {
           queryDate: values.queryDate || undefined,
@@ -1336,9 +1396,7 @@ export function LeadCreateForm({
           priority: values.priority,
           assigneeId: values.assigneeId || undefined,
           nextFollowUpAt: values.nextFollowUpAt || undefined,
-          notes: noteParts.join("\n\n") || undefined,
-          requiredDeliveryDate: values.requiredDeliveryDate || undefined,
-          promisedDeliveryDate: values.promisedDeliveryDate || undefined,
+          notes: values.notes.trim() || undefined,
           attendedById: values.attendedById || undefined,
           result: values.result,
           resultReason: values.resultReason || undefined,
@@ -1395,9 +1453,35 @@ export function LeadCreateForm({
       <SectionCard
         step={1}
         title="Query & customer information"
-        detail="Who is enquiring and how they reached you."
+        detail="Pick an existing customer to autofill details, or enter a new one."
       >
         <div className="grid gap-4 md:grid-cols-3">
+          <LeadField
+            label="Customer"
+            detail={
+              selectedCustomer
+                ? "autofilled — edit if needed"
+                : "new email only — if email exists, pick customer from this list"
+            }
+            className="md:col-span-3"
+          >
+            <select
+              className={fieldClass}
+              value={selectedCustomerId}
+              onChange={(event) => applyCustomerSelection(event.target.value)}
+            >
+              <option value="">New customer — enter details below</option>
+              {customers.map((customer) => (
+                <option key={customer.id} value={customer.id}>
+                  {customer.code
+                    ? `${customer.code} — ${customer.name}`
+                    : customer.name}
+                  {customer.phone ? ` · ${customer.phone}` : ""}
+                  {customer.email ? ` · ${customer.email}` : ""}
+                </option>
+              ))}
+            </select>
+          </LeadField>
           <LeadField label="Date">
             <input
               className={fieldClass}
@@ -1461,18 +1545,6 @@ export function LeadCreateForm({
               {...form.register("email")}
             />
           </LeadField>
-          <LeadField label="Link existing customer">
-            <select className={fieldClass} {...form.register("customerId")}>
-              <option value="">None</option>
-              {customers.map((customer) => (
-                <option key={customer.id} value={customer.id}>
-                  {customer.code
-                    ? `${customer.code} — ${customer.name}`
-                    : customer.name}
-                </option>
-              ))}
-            </select>
-          </LeadField>
         </div>
         <div className="mt-4">
           <LeadField label="Address">
@@ -1518,7 +1590,7 @@ export function LeadCreateForm({
           <div className="flex flex-wrap gap-2">
             {LEAD_PRIORITIES.map((value) => {
               const selected = priority === value;
-              const label = value === "HOT" ? "Hot" : value === "WARM" ? "Warm" : "Cold";
+              const label = leadPriorityLabel(value);
               return (
                 <button
                   key={value}
@@ -1550,7 +1622,7 @@ export function LeadCreateForm({
       <SectionCard
         step={2}
         title="Requested materials & specifications"
-        detail="What they need and the details that matter."
+        detail="What they need, specs, and per-product delivery dates."
       >
         <div className="space-y-4">
           {fields.map((field, index) => (
@@ -1582,49 +1654,6 @@ export function LeadCreateForm({
 
       <SectionCard
         step={3}
-        title="Commercial & delivery"
-        detail="Timeline and customer expectations."
-      >
-        <div className="grid gap-4 md:grid-cols-2">
-          <LeadField
-            label="Required delivery date"
-            detail="Customer's requested date"
-          >
-            <input
-              className={fieldClass}
-              type="date"
-              {...form.register("requiredDeliveryDate")}
-            />
-          </LeadField>
-          <LeadField
-            label="Promised delivery date"
-            detail="SS-Metals' confirmed commitment"
-          >
-            <input
-              className={fieldClass}
-              type="date"
-              {...form.register("promisedDeliveryDate")}
-            />
-          </LeadField>
-          {isPromisedLate ? (
-            <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-700/50 dark:bg-amber-950/30 dark:text-amber-300 md:col-span-2">
-              <span className="font-semibold">Notice:</span> Promised delivery date ({promisedDeliveryDate}) is later than the customer&apos;s required delivery date ({requiredDeliveryDate}).
-            </div>
-          ) : null}
-          <div className="md:col-span-2">
-            <LeadField label="Customer remarks">
-              <input
-                className={fieldClass}
-                placeholder="Special requests or terms"
-                {...form.register("customerRemarks")}
-              />
-            </LeadField>
-          </div>
-        </div>
-      </SectionCard>
-
-      <SectionCard
-        step={4}
         title="Office use & follow-up"
         detail="Internal tracking only."
       >

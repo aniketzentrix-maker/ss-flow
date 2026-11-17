@@ -58,9 +58,9 @@ export function normalizeLeadPriority(value?: string | null): LeadPriority {
 export function leadPriorityLabel(priority: string) {
   const key = priority?.trim() || "WARM";
   const mapped = LEGACY_PRIORITY_LABELS[key.toLowerCase()] ?? key.toUpperCase();
-  if (mapped === "HOT") return "Hot";
-  if (mapped === "WARM") return "Warm";
-  if (mapped === "COLD") return "Cold";
+  if (mapped === "HOT") return "High";
+  if (mapped === "WARM") return "Medium";
+  if (mapped === "COLD") return "Low";
   return key.replaceAll("_", " ");
 }
 
@@ -76,7 +76,7 @@ export const LEAD_STATUSES = [
   "NEGOTIATION",
   "SAMPLE_APPROVAL",
   "CONVERTED",
-  "ON_HOLD",
+  "PENDING",
   "LOST",
   "REJECTED",
 ] as const;
@@ -96,7 +96,7 @@ export const LEAD_STATUS_FLOW_ORDER: readonly LeadStatus[] = [
   "NEGOTIATION",
   "SAMPLE_APPROVAL",
   "CONVERTED",
-  "ON_HOLD",
+  "PENDING",
   "LOST",
   "REJECTED",
 ];
@@ -154,8 +154,8 @@ export const LEAD_STATUS_META: Record<
     description: "Lead closed as a won order",
     kind: "terminal",
   },
-  ON_HOLD: {
-    label: "On hold",
+  PENDING: {
+    label: "Pending",
     description: "Paused; resume when the customer is ready",
     kind: "outcome",
   },
@@ -216,16 +216,16 @@ export function manualLeadStatusOptions(from: string, orderType?: string | null)
 const TERMINAL: LeadStatus[] = ["CONVERTED", "LOST", "REJECTED"];
 
 const TRANSITIONS: Record<LeadStatus, LeadStatus[]> = {
-  NEW: ["CONTACTED", "FOLLOW_UP", "ON_HOLD", "LOST", "REJECTED"],
-  CONTACTED: ["FOLLOW_UP", "QUOTATION_SENT", "ON_HOLD", "LOST", "REJECTED"],
-  FOLLOW_UP: ["CONTACTED", "QUOTATION_SENT", "ON_HOLD", "LOST", "REJECTED"],
-  VERIFICATION_PENDING: ["CONTACTED", "ON_HOLD", "LOST", "REJECTED"],
-  VERIFIED: ["QUOTATION_SENT", "CONVERTED", "ON_HOLD", "LOST", "REJECTED"],
-  QUOTATION_SENT: ["NEGOTIATION", "VERIFIED", "CONVERTED", "FOLLOW_UP", "ON_HOLD", "LOST", "REJECTED", "SAMPLE_APPROVAL"],
-  NEGOTIATION: ["QUOTATION_SENT", "CONVERTED", "FOLLOW_UP", "ON_HOLD", "LOST", "REJECTED", "SAMPLE_APPROVAL"],
+  NEW: ["CONTACTED", "FOLLOW_UP", "PENDING", "LOST", "REJECTED"],
+  CONTACTED: ["FOLLOW_UP", "QUOTATION_SENT", "PENDING", "LOST", "REJECTED"],
+  FOLLOW_UP: ["CONTACTED", "QUOTATION_SENT", "PENDING", "LOST", "REJECTED"],
+  VERIFICATION_PENDING: ["CONTACTED", "PENDING", "LOST", "REJECTED"],
+  VERIFIED: ["QUOTATION_SENT", "CONVERTED", "PENDING", "LOST", "REJECTED"],
+  QUOTATION_SENT: ["NEGOTIATION", "VERIFIED", "CONVERTED", "FOLLOW_UP", "PENDING", "LOST", "REJECTED", "SAMPLE_APPROVAL"],
+  NEGOTIATION: ["QUOTATION_SENT", "CONVERTED", "FOLLOW_UP", "PENDING", "LOST", "REJECTED", "SAMPLE_APPROVAL"],
   SAMPLE_APPROVAL: ["NEGOTIATION", "CONVERTED", "LOST"],
   CONVERTED: [],
-  ON_HOLD: ["CONTACTED", "FOLLOW_UP", "LOST", "REJECTED"],
+  PENDING: ["CONTACTED", "FOLLOW_UP", "PENDING", "LOST", "REJECTED"],
   LOST: ["CONTACTED", "FOLLOW_UP"],
   REJECTED: ["CONTACTED", "FOLLOW_UP"],
 };

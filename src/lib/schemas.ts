@@ -774,6 +774,8 @@ export const leadItemSchema = z.object({
   inStock: z.boolean().optional(),
   estimatedLeadTimeDays: z.coerce.number().int().min(0).max(365).optional(),
   expectedDeliveryDate: z.string().max(32).optional(),
+  requiredDeliveryDate: z.string().max(32).optional(),
+  promisedDeliveryDate: z.string().max(32).optional(),
 });
 
 export const leadCreateSchema = z.object({

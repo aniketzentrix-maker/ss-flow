@@ -394,8 +394,13 @@ export default async function LeadDetailPage({
       ),
       marketPrice: item.marketPrice?.toString() ?? item.product?.sellingPrice?.toString() ?? "",
       priceOffered: item.priceOffered?.toString() ?? "",
-      expectedDelivery: item.expectedDeliveryDate
-        ? when(item.expectedDeliveryDate)
+      requiredDelivery: item.requiredDeliveryDate
+        ? when(item.requiredDeliveryDate)
+        : item.expectedDeliveryDate
+          ? when(item.expectedDeliveryDate)
+          : "—",
+      promisedDelivery: item.promisedDeliveryDate
+        ? when(item.promisedDeliveryDate)
         : "—",
     };
   });
@@ -415,7 +420,8 @@ export default async function LeadDetailPage({
     uom: row.uom,
     marketRate: formatPrice(row.marketPrice),
     offerRate: formatPrice(row.priceOffered),
-    expectedDelivery: row.expectedDelivery,
+    requiredDelivery: row.requiredDelivery,
+    promisedDelivery: row.promisedDelivery,
     weight: row.weight,
   }));
 
@@ -693,7 +699,8 @@ export default async function LeadDetailPage({
               { key: "uom", label: "UOM", minWidth: 44 },
               { key: "marketRate", label: "Market rate", align: "right", minWidth: 88 },
               { key: "offerRate", label: "Offered to customer", align: "right", minWidth: 100 },
-              { key: "expectedDelivery", label: "Exp. delivery", minWidth: 96 },
+              { key: "requiredDelivery", label: "Required", minWidth: 96 },
+              { key: "promisedDelivery", label: "Promised", minWidth: 96 },
               { key: "weight", label: "Unit wt.", align: "right", minWidth: 72 },
             ]}
             rows={tableRows}

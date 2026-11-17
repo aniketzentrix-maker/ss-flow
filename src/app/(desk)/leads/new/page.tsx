@@ -1,13 +1,13 @@
 import { LeadCreateForm } from "@/components/leads/lead-create-form";
 import { DeskFormPage } from "@/components/desk";
 import { requirePage } from "@/lib/access";
-import { listEmployees, listSalesOrderCustomers, listUoms } from "@/lib/queries";
+import { listEmployees, listLeadFormCustomers, listUoms } from "@/lib/queries";
 import { leadProductCatalog } from "@/modules/leads/queries";
 
 export default async function NewLeadPage() {
   const session = await requirePage("lead.manage");
   const [customers, employees, catalog, uoms] = await Promise.all([
-    listSalesOrderCustomers(session.plantIds),
+    listLeadFormCustomers(session.plantIds),
     listEmployees(session.plantIds),
     leadProductCatalog(session.plantIds),
     listUoms(session.plantIds),
@@ -17,6 +17,7 @@ export default async function NewLeadPage() {
       <LeadCreateForm
         customers={customers}
         employees={employees.map((employee) => ({ id: employee.id, name: employee.name }))}
+        defaultAssigneeId={session.employeeId ?? ""}
         products={catalog.products}
         categories={catalog.categories.map((row) => ({
           id: row.id,

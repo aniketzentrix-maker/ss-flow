@@ -141,7 +141,7 @@ export function LeadDetailActions({
     (Boolean(lostReasonCode) && (lostReasonCode !== "OTHER" || statusReason.trim().length > 0));
   const followUpRequired = selectedStatus ? statusRequiresNextFollowUp(selectedStatus) : false;
   const legacyVerificationStage = status === "VERIFICATION_PENDING";
-  const preQualified = ["NEW", "CONTACTED", "FOLLOW_UP", "ON_HOLD", "VERIFICATION_PENDING"].includes(status);
+  const preQualified = ["NEW", "CONTACTED", "FOLLOW_UP", "PENDING", "VERIFICATION_PENDING"].includes(status);
   const customOrder = isCustomLeadOrder(orderType);
   const customPoWarning =
     customOrder && reviewOpen && !poNumber.trim() && !advanceAmount.trim();
