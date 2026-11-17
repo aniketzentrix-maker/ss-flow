@@ -1012,6 +1012,11 @@ export async function updateLeadDeliveryDates(
   input: {
     requiredDeliveryDate?: string | null;
     promisedDeliveryDate?: string | null;
+    items?: {
+      id: string;
+      requiredDeliveryDate?: string | null;
+      promisedDeliveryDate?: string | null;
+    }[];
   },
   key: string | null,
 ) {
@@ -1022,22 +1027,84 @@ export async function updateLeadDeliveryDates(
     key,
     run: async (tx) => {
       const lead = await leadForSession(tx, leadId, session);
-      const data: { requiredDeliveryDate?: Date | null; promisedDeliveryDate?: Date | null } = {};
       const changes: string[] = [];
 
-      if (input.requiredDeliveryDate !== undefined) {
-        data.requiredDeliveryDate = input.requiredDeliveryDate ? new Date(input.requiredDeliveryDate) : null;
-        changes.push(`Required delivery date: ${input.requiredDeliveryDate || "cleared"}`);
-      }
-      if (input.promisedDeliveryDate !== undefined) {
-        data.promisedDeliveryDate = input.promisedDeliveryDate ? new Date(input.promisedDeliveryDate) : null;
-        changes.push(`Promised delivery date: ${input.promisedDeliveryDate || "cleared"}`);
+      if (input.items?.length) {
+        const existingItems = await tx.leadItem.findMany({
+          where: { leadId },
+          select: { id: true },
+        });
+        const allowed = new Set(existingItems.map((row) => row.id));
+        for (const line of input.items) {
+          if (!allowed.has(line.id)) {
+            throw new AppError(400, "VALIDATION", "One or more lead items do not belong to this lead.");
+          }
+          const requiredDeliveryDate =
+            line.requiredDeliveryDate === undefined
+              ? undefined
+              : line.requiredDeliveryDate
+                ? new Date(line.requiredDeliveryDate)
+                : null;
+          const promisedDeliveryDate =
+            line.promisedDeliveryDate === undefined
+              ? undefined
+              : line.promisedDeliveryDate
+                ? new Date(line.promisedDeliveryDate)
+                : null;
+          await tx.leadItem.update({
+            where: { id: line.id },
+            data: {
+              ...(requiredDeliveryDate !== undefined
+                ? {
+                    requiredDeliveryDate,
+                    expectedDeliveryDate: requiredDeliveryDate,
+                  }
+                : {}),
+              ...(promisedDeliveryDate !== undefined ? { promisedDeliveryDate } : {}),
+            },
+          });
+        }
+        changes.push(`Updated delivery dates for ${input.items.length} product line(s)`);
       }
 
-      await tx.lead.update({
-        where: { id: leadId },
-        data,
+      const itemRows = await tx.leadItem.findMany({
+        where: { leadId },
+        select: { requiredDeliveryDate: true, promisedDeliveryDate: true },
       });
+      const earliestRequired = itemRows
+        .map((row) => row.requiredDeliveryDate)
+        .filter((value): value is Date => Boolean(value))
+        .sort((a, b) => a.getTime() - b.getTime())[0];
+      const earliestPromised = itemRows
+        .map((row) => row.promisedDeliveryDate)
+        .filter((value): value is Date => Boolean(value))
+        .sort((a, b) => a.getTime() - b.getTime())[0];
+
+      const data: { requiredDeliveryDate?: Date | null; promisedDeliveryDate?: Date | null } = {};
+      if (input.items?.length) {
+        data.requiredDeliveryDate = earliestRequired ?? null;
+        data.promisedDeliveryDate = earliestPromised ?? null;
+      } else {
+        if (input.requiredDeliveryDate !== undefined) {
+          data.requiredDeliveryDate = input.requiredDeliveryDate
+            ? new Date(input.requiredDeliveryDate)
+            : null;
+          changes.push(`Required delivery date: ${input.requiredDeliveryDate || "cleared"}`);
+        }
+        if (input.promisedDeliveryDate !== undefined) {
+          data.promisedDeliveryDate = input.promisedDeliveryDate
+            ? new Date(input.promisedDeliveryDate)
+            : null;
+          changes.push(`Promised delivery date: ${input.promisedDeliveryDate || "cleared"}`);
+        }
+      }
+
+      if (Object.keys(data).length) {
+        await tx.lead.update({
+          where: { id: leadId },
+          data,
+        });
+      }
 
       if (changes.length > 0) {
         await addLeadActivity(tx, {
@@ -1050,8 +1117,10 @@ export async function updateLeadDeliveryDates(
 
       return {
         id: leadId,
-        requiredDeliveryDate: data.requiredDeliveryDate !== undefined ? data.requiredDeliveryDate : lead.requiredDeliveryDate,
-        promisedDeliveryDate: data.promisedDeliveryDate !== undefined ? data.promisedDeliveryDate : lead.promisedDeliveryDate,
+        requiredDeliveryDate:
+          data.requiredDeliveryDate !== undefined ? data.requiredDeliveryDate : lead.requiredDeliveryDate,
+        promisedDeliveryDate:
+          data.promisedDeliveryDate !== undefined ? data.promisedDeliveryDate : lead.promisedDeliveryDate,
       };
     },
   });

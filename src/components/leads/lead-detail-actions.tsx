@@ -79,9 +79,7 @@ export function LeadDetailActions({
   const verifyPost = usePost();
   const rejectPost = usePost();
   const statusPost = usePost();
-  const negotiationPost = usePost();
   const convertPost = usePost();
-  const datesPost = usePost();
   const { confirm, ConfirmDialog } = useConfirmModal();
   const [checks, setChecks] = useState({
     customerConfirmed: false,
@@ -112,8 +110,6 @@ export function LeadDetailActions({
   );
   const initialRequired = requiredDeliveryDate ?? (promisedDate || "");
   const initialPromised = promisedDeliveryDate ?? "";
-  const [editRequiredDate, setEditRequiredDate] = useState(initialRequired);
-  const [editPromisedDate, setEditPromisedDate] = useState(initialPromised);
   const [confirmPromisedDate, setConfirmPromisedDate] = useState(initialPromised);
   const [expectedDispatchDate, setExpectedDispatchDate] = useState("");
   const [poNumber, setPoNumber] = useState("");
@@ -411,55 +407,6 @@ export function LeadDetailActions({
         </section>
       ) : null}
 
-      {canManage && ["NEGOTIATION", "QUOTATION_SENT"].includes(status) ? (
-        <section className="space-y-3 rounded-xl border border-border bg-card p-4">
-          <h2 className="font-semibold">Negotiation intelligence</h2>
-          <p className="text-sm text-muted">Optional competitor and target pricing while the deal is active.</p>
-          <div className="grid gap-3 sm:grid-cols-3">
-            <Field label="Competitor name">
-              <input
-                className={controlClass}
-                value={competitorName}
-                onChange={(event) => setCompetitorName(event.target.value)}
-              />
-            </Field>
-            <Field label="Competitor rate">
-              <input
-                className={controlClass}
-                inputMode="decimal"
-                value={competitorRate}
-                onChange={(event) => setCompetitorRate(event.target.value)}
-              />
-            </Field>
-            <Field label="Customer target rate">
-              <input
-                className={controlClass}
-                inputMode="decimal"
-                value={customerTargetRate}
-                onChange={(event) => setCustomerTargetRate(event.target.value)}
-              />
-            </Field>
-          </div>
-          <FormFeedback error={negotiationPost.error} success={negotiationPost.success} />
-          <Button
-            pending={negotiationPost.pending}
-            onClick={() =>
-              void negotiationPost.post(
-                `/api/v1/leads/${leadId}/negotiation`,
-                {
-                  competitorName,
-                  competitorRate,
-                  customerTargetRate,
-                },
-                { successMessage: "Negotiation details saved." },
-              )
-            }
-          >
-            Save intelligence
-          </Button>
-        </section>
-      ) : null}
-
       {canManage && !["CONVERTED", "REJECTED", "LOST"].includes(status) ? (
         <section className="space-y-3 rounded-xl border border-border bg-card p-4">
           <h2 className="font-semibold">Reject enquiry</h2>
@@ -526,54 +473,6 @@ export function LeadDetailActions({
             Reject Lead
           </Button>
         </section>
-      ) : null}
-
-      {canManage && status !== "CONVERTED" ? (
-        <details className="rounded-xl border border-border bg-card p-4">
-          <summary className="cursor-pointer font-semibold">Update delivery dates</summary>
-          <div className="mt-3 grid gap-3 sm:grid-cols-2 md:grid-cols-3 sm:items-end">
-            <Field label="Required delivery date" detail="Customer requested date">
-              <input
-                className={controlClass}
-                type="date"
-                value={editRequiredDate}
-                onChange={(e) => setEditRequiredDate(e.target.value)}
-              />
-            </Field>
-            <Field label="Promised delivery date" detail="SS-Metals commitment">
-              <input
-                className={controlClass}
-                type="date"
-                value={editPromisedDate}
-                onChange={(e) => setEditPromisedDate(e.target.value)}
-              />
-            </Field>
-            <div>
-              <Button
-                pending={datesPost.pending}
-                onClick={() =>
-                  void datesPost.post(
-                    `/api/v1/leads/${leadId}/dates`,
-                    {
-                      requiredDeliveryDate: editRequiredDate || null,
-                      promisedDeliveryDate: editPromisedDate || null,
-                    },
-                    { successMessage: "Delivery dates updated." },
-                  )
-                }
-              >
-                Save delivery dates
-              </Button>
-            </div>
-          </div>
-          {editRequiredDate && editPromisedDate && editPromisedDate > editRequiredDate ? (
-            <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">
-              Notice: Promised delivery date ({editPromisedDate}) is later than customer&apos;s
-              required delivery date ({editRequiredDate}).
-            </p>
-          ) : null}
-          <FormFeedback error={datesPost.error} success={datesPost.success} />
-        </details>
       ) : null}
 
       {showFulfillmentPreview && !canConvert && products.length > 0 ? (

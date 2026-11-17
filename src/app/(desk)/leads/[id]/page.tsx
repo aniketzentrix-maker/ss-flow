@@ -448,11 +448,16 @@ export default async function LeadDetailPage({
         source={lead.source}
         meta={`Created ${when(lead.createdAt)} · ${leadSourceLabel(lead.source)} · ${leadOrderTypeLabel(lead.orderType)} · ${leadPriorityLabel(lead.priority)} priority`}
         action={
-          lead.salesOrder ? (
-            <DetailActionLink href={`/sales/${lead.salesOrder.id}`}>
-              View sales order {lead.salesOrder.number}
-            </DetailActionLink>
-          ) : undefined
+          <div className="flex flex-wrap items-center gap-2">
+            {session.permissions.has("lead.manage") && lead.status !== "CONVERTED" ? (
+              <DetailActionLink href={`/leads/${lead.id}/edit`}>Edit lead</DetailActionLink>
+            ) : null}
+            {lead.salesOrder ? (
+              <DetailActionLink href={`/sales/${lead.salesOrder.id}`}>
+                View sales order {lead.salesOrder.number}
+              </DetailActionLink>
+            ) : null}
+          </div>
         }
       />
 

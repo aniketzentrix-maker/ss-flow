@@ -14,11 +14,14 @@ import {
 import { quotationMaxDiscountPct } from "@/modules/leads/quotations/config";
 import { quotationLinePresentation } from "@/modules/leads/quotations/line-description";
 
+type FreightOption = "EXTRA" | "NO_FREIGHT";
+
 type QuotationDetail = {
   id: string;
   status: string;
   validUntil: string;
   deliveryTimeDays: number | null;
+  deliveryTerms: string | null;
   freightAmount: string;
   loadingCharges: string;
   gstPercent: string;
@@ -50,6 +53,20 @@ type QuotationDetail = {
     expectedDeliveryDate: string | null;
   }[];
 };
+
+function freightOptionFromTerms(terms: string | null | undefined): FreightOption {
+  const value = (terms ?? "").trim().toLowerCase();
+  if (!value) return "NO_FREIGHT";
+  if (value.includes("no freight") || value === "no_freight" || value === "included") {
+    return "NO_FREIGHT";
+  }
+  if (value.includes("extra") || value === "freight_extra") return "EXTRA";
+  return "NO_FREIGHT";
+}
+
+function freightTermsLabel(option: FreightOption) {
+  return option === "EXTRA" ? "Extra" : "No Freight Cost";
+}
 
 type LineDraft = {
   key: string;
@@ -122,8 +139,7 @@ export function QuotationDraftEditor({
 
   const [validUntil, setValidUntil] = useState("");
   const [deliveryTimeDays, setDeliveryTimeDays] = useState("");
-  const [freightAmount, setFreightAmount] = useState("0");
-  const [loadingCharges, setLoadingCharges] = useState("0");
+  const [freightOption, setFreightOption] = useState<FreightOption>("NO_FREIGHT");
   const [gstPercent, setGstPercent] = useState("18");
   const [notes, setNotes] = useState("");
   const [lines, setLines] = useState<LineDraft[]>([]);
@@ -145,8 +161,7 @@ export function QuotationDraftEditor({
       }
       setValidUntil(toDatetimeLocalValue(data.validUntil));
       setDeliveryTimeDays(data.deliveryTimeDays != null ? String(data.deliveryTimeDays) : "");
-      setFreightAmount(data.freightAmount || "0");
-      setLoadingCharges(data.loadingCharges || "0");
+      setFreightOption(freightOptionFromTerms(data.deliveryTerms));
       setGstPercent(data.gstPercent || "18");
       setNotes(data.notes ?? "");
       setLines(linesFromDetail(data.items));
@@ -165,11 +180,11 @@ export function QuotationDraftEditor({
     }));
     return computeQuotationTotals({
       lines: amounts,
-      freightAmount: freightAmount || "0",
-      loadingCharges: loadingCharges || "0",
+      freightAmount: "0",
+      loadingCharges: "0",
       gstPercent: gstPercent || "0",
     });
-  }, [lines, freightAmount, loadingCharges, gstPercent]);
+  }, [lines, gstPercent]);
 
   const needsPricingApproval = useMemo(
     () =>
@@ -210,7 +225,7 @@ export function QuotationDraftEditor({
         return;
       }
       if (line.marketRate.trim() && !ratePattern.test(line.marketRate.trim())) {
-        setError(`${line.title}: market rate must be a valid number.`);
+        setError(`${line.title}: list price must be a valid number.`);
         setSaving(false);
         return;
       }
@@ -224,14 +239,14 @@ export function QuotationDraftEditor({
     const payload = {
       validUntil: fromDatetimeLocalValue(validUntil),
       deliveryTimeDays: deliveryTimeDays.trim() ? Number(deliveryTimeDays) : undefined,
-      freightAmount: freightAmount.trim() || "0",
-      loadingCharges: loadingCharges.trim() || "0",
+      freightAmount: "0",
+      loadingCharges: "0",
       gstPercent: gstPercent.trim() || "18",
       notes: notes.trim() || undefined,
       includesMtc: false,
       thirdPartyInspection: false,
       paymentTerms: undefined,
-      deliveryTerms: undefined,
+      deliveryTerms: freightTermsLabel(freightOption),
       items: lines.map((line) => ({
         leadItemId: line.leadItemId,
         productId: line.productId,
@@ -243,6 +258,7 @@ export function QuotationDraftEditor({
         listRate: line.marketRate.trim() || undefined,
         rate: line.offerRate.trim(),
         pricingBasis: line.pricingBasis || undefined,
+        // Keep existing value if present; delivery dates are not edited on the quotation card.
         expectedDeliveryDate: line.expectedDeliveryDate.trim() || undefined,
       })),
     };
@@ -291,7 +307,7 @@ export function QuotationDraftEditor({
       <div>
         <h3 className="text-sm font-semibold">Customer pricing (per product)</h3>
         <p className="text-xs text-muted">
-          Lines come from this lead&apos;s requested items. Market rate is your reference; offer rate is what
+          Lines come from this lead&apos;s requested items. List price is your reference; offer rate is what
           the customer sees on the quotation. Saving updates this lead&apos;s CRM record.
         </p>
       </div>
@@ -317,7 +333,7 @@ export function QuotationDraftEditor({
                 </p>
               </div>
               <div className="mt-3 grid gap-3 sm:grid-cols-3">
-                <Field label={`Market rate (₹ / ${line.uom})`} detail="Reference / list">
+                <Field label={`List price (₹ / ${line.uom})`} detail="Reference">
                   <input
                     className={controlClass}
                     inputMode="decimal"
@@ -354,23 +370,9 @@ export function QuotationDraftEditor({
                   </select>
                 </Field>
               </div>
-              <div className="mt-3 max-w-xs">
-                <Field
-                  label="Expected delivery (this product)"
-                  detail="From lead or adjust before send"
-                >
-                  <input
-                    type="date"
-                    className={controlClass}
-                    value={line.expectedDeliveryDate}
-                    disabled={!canEdit}
-                    onChange={(e) => updateLine(index, { expectedDeliveryDate: e.target.value })}
-                  />
-                </Field>
-              </div>
               {market > 0 && offer > 0 && disc > maxDiscount ? (
                 <p className="mt-2 text-xs text-amber-800 dark:text-amber-200">
-                  Discount {disc.toFixed(1)}% vs market — manager approval needed before send.
+                  Discount {disc.toFixed(1)}% vs list price — manager approval needed before send.
                 </p>
               ) : null}
             </div>
@@ -398,21 +400,16 @@ export function QuotationDraftEditor({
               onChange={(e) => setGstPercent(e.target.value)}
             />
           </Field>
-          <Field label="Freight (₹)">
-            <input
+          <Field label="Freight">
+            <select
               className={controlClass}
-              value={freightAmount}
+              value={freightOption}
               disabled={!canEdit}
-              onChange={(e) => setFreightAmount(e.target.value)}
-            />
-          </Field>
-          <Field label="Loading (₹)">
-            <input
-              className={controlClass}
-              value={loadingCharges}
-              disabled={!canEdit}
-              onChange={(e) => setLoadingCharges(e.target.value)}
-            />
+              onChange={(e) => setFreightOption(e.target.value as FreightOption)}
+            >
+              <option value="EXTRA">Extra</option>
+              <option value="NO_FREIGHT">No Freight Cost</option>
+            </select>
           </Field>
           <Field label="Notes">
             <textarea className={`${controlClass} min-h-16 py-2`} value={notes} disabled={!canEdit} onChange={(e) => setNotes(e.target.value)} />

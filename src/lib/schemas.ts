@@ -950,6 +950,15 @@ export const deliveryDatesSchema = z.object({
   requiredDeliveryDate: z.string().nullable().optional(),
   promisedDate: z.string().nullable().optional(),
   promisedDeliveryDate: z.string().nullable().optional(),
+  items: z
+    .array(
+      z.object({
+        id: z.string().uuid(),
+        requiredDeliveryDate: z.string().nullable().optional(),
+        promisedDeliveryDate: z.string().nullable().optional(),
+      }),
+    )
+    .optional(),
 });
 
 export const publicLeadEnquirySchema = z.object({

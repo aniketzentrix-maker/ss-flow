@@ -10,6 +10,7 @@ type QuotationRecord = {
   sentVia: string | null;
   hasSentCopy: boolean;
   total: string;
+  deliveryTerms: string | null;
   items: {
     description: string | null;
     grade: string | null;
@@ -19,7 +20,6 @@ type QuotationRecord = {
     listRate: string | null;
     rate: string;
     amount: string;
-    expectedDeliveryDate: string | null;
   }[];
 };
 
@@ -70,9 +70,8 @@ export function QuotationSentRecord({ quotationId }: { quotationId: string }) {
           <thead className="text-left text-xs uppercase tracking-wide text-muted">
             <tr>
               <th className="pb-2 pr-2">Product</th>
-              <th className="pb-2 pr-2 text-right">Market</th>
+              <th className="pb-2 pr-2 text-right">List price</th>
               <th className="pb-2 pr-2 text-right">Offered</th>
-              <th className="pb-2 pr-2">Exp. delivery</th>
               <th className="pb-2 text-right">Line total</th>
             </tr>
           </thead>
@@ -90,11 +89,6 @@ export function QuotationSentRecord({ quotationId }: { quotationId: string }) {
                   {line.listRate ? `₹${line.listRate}` : "—"}
                 </td>
                 <td className="py-2 pr-2 text-right tabular-nums">₹{line.rate}</td>
-                <td className="py-2 pr-2 text-sm">
-                  {line.expectedDeliveryDate
-                    ? new Date(line.expectedDeliveryDate).toLocaleDateString("en-IN")
-                    : "—"}
-                </td>
                 <td className="py-2 text-right tabular-nums">₹{line.amount}</td>
               </tr>
             ))}
@@ -103,6 +97,12 @@ export function QuotationSentRecord({ quotationId }: { quotationId: string }) {
       </div>
       <p className="text-sm text-muted">
         Quotation total: <span className="font-semibold text-foreground">₹{record.total}</span>
+        {record.deliveryTerms ? (
+          <>
+            {" "}
+            · Freight: <span className="font-medium text-foreground">{record.deliveryTerms}</span>
+          </>
+        ) : null}
       </p>
     </div>
   );
