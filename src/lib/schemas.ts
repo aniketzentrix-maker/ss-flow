@@ -258,6 +258,18 @@ export const categoryUpdateSchema = z.object({
   status: z.enum(["active", "inactive"]).optional(),
 });
 
+export const categoryUomsSetSchema = z.object({
+  mappings: z
+    .array(
+      z.object({
+        unitId: z.string().uuid(),
+        isDefault: z.boolean().optional(),
+        isActive: z.boolean().optional(),
+      }),
+    )
+    .min(1, "Select at least one UOM"),
+});
+
 export const categorySchema = z.object({
   code: z
     .string()
@@ -362,6 +374,10 @@ export const createProductSchema = z
     name: z.string().min(2),
     businessKind: z.enum(["trading", "manufactured"]),
     baseUnitSymbol: z.string().optional().or(z.literal("")),
+    /** Allowed transaction UOMs for lead/order dropdowns (symbols). */
+    allowedUomSymbols: z.array(z.string().min(1).max(16)).min(1).max(20).optional(),
+    /** Product GST slab used on quotations. */
+    gstPercent: z.enum(["5", "18"]).optional(),
     description: z.string().optional(),
     productType: z.string().optional(),
     specs: z.record(z.string(), z.unknown()).optional(),
@@ -371,8 +387,21 @@ export const createProductSchema = z
       context.addIssue({
         code: "custom",
         path: ["baseUnitSymbol"],
-        message: "Choose a unit.",
+        message: "Choose a default unit.",
       });
+    }
+    const allowed = (value.allowedUomSymbols ?? [])
+      .map((s) => s.trim().toUpperCase())
+      .filter(Boolean);
+    if (allowed.length && value.baseUnitSymbol?.trim()) {
+      const base = value.baseUnitSymbol.trim().toUpperCase();
+      if (!allowed.includes(base)) {
+        context.addIssue({
+          code: "custom",
+          path: ["baseUnitSymbol"],
+          message: "Default UOM must be one of the allowed units.",
+        });
+      }
     }
     for (const [key, raw] of Object.entries(value.specs ?? {})) {
       if (["thickness", "width", "length", "diameter", "netWeightKg", "innerDiameter", "outerDiameter", "height", "capacityLitres"].includes(key)) {
@@ -890,6 +919,7 @@ const quotationLineWriteSchema = z.object({
   listRate: z.string().optional(),
   rate: z.string(),
   pricingBasis: z.enum(["PER_KG", "PER_PIECE"]).optional(),
+  gstPercent: z.enum(["5", "18"]).optional(),
   expectedDeliveryDate: z.string().max(32).optional(),
 });
 

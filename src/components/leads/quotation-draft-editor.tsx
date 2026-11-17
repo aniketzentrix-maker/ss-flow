@@ -50,6 +50,7 @@ type QuotationDetail = {
     listRate: string | null;
     rate: string;
     pricingBasis: string | null;
+    gstPercent?: string | null;
     expectedDeliveryDate: string | null;
   }[];
 };
@@ -81,6 +82,7 @@ type LineDraft = {
   marketRate: string;
   offerRate: string;
   pricingBasis: "" | "PER_KG" | "PER_PIECE";
+  gstPercent: "5" | "18";
   expectedDeliveryDate: string;
 };
 
@@ -117,6 +119,7 @@ function linesFromDetail(items: QuotationDetail["items"]): LineDraft[] {
       item.pricingBasis === "PER_KG" || item.pricingBasis === "PER_PIECE"
         ? item.pricingBasis
         : "",
+    gstPercent: Number(item.gstPercent) === 5 ? "5" : "18",
     expectedDeliveryDate: item.expectedDeliveryDate ?? item.leadItem?.expectedDeliveryDate ?? "",
   };
   });
@@ -162,9 +165,16 @@ export function QuotationDraftEditor({
       setValidUntil(toDatetimeLocalValue(data.validUntil));
       setDeliveryTimeDays(data.deliveryTimeDays != null ? String(data.deliveryTimeDays) : "");
       setFreightOption(freightOptionFromTerms(data.deliveryTerms));
-      setGstPercent(data.gstPercent || "18");
+      const nextLines = linesFromDetail(data.items);
+      setLines(nextLines);
+      const shared =
+        nextLines.length && nextLines.every((line) => line.gstPercent === nextLines[0]?.gstPercent)
+          ? nextLines[0]!.gstPercent
+          : Number(data.gstPercent) === 5
+            ? "5"
+            : "18";
+      setGstPercent(shared);
       setNotes(data.notes ?? "");
-      setLines(linesFromDetail(data.items));
     } finally {
       setLoading(false);
     }
@@ -177,12 +187,17 @@ export function QuotationDraftEditor({
   const previewTotals = useMemo(() => {
     const amounts = lines.map((line) => ({
       amount: computeLineAmount(line.qty, line.offerRate),
+      gstPercent: line.gstPercent,
     }));
+    const dominant =
+      lines.length && lines.every((line) => line.gstPercent === lines[0]?.gstPercent)
+        ? lines[0]!.gstPercent
+        : gstPercent || "18";
     return computeQuotationTotals({
       lines: amounts,
       freightAmount: "0",
       loadingCharges: "0",
-      gstPercent: gstPercent || "0",
+      gstPercent: dominant,
     });
   }, [lines, gstPercent]);
 
@@ -241,7 +256,10 @@ export function QuotationDraftEditor({
       deliveryTimeDays: deliveryTimeDays.trim() ? Number(deliveryTimeDays) : undefined,
       freightAmount: "0",
       loadingCharges: "0",
-      gstPercent: gstPercent.trim() || "18",
+      gstPercent:
+        lines.length && lines.every((line) => line.gstPercent === lines[0]?.gstPercent)
+          ? lines[0]!.gstPercent
+          : gstPercent.trim() || "18",
       notes: notes.trim() || undefined,
       includesMtc: false,
       thirdPartyInspection: false,
@@ -258,6 +276,7 @@ export function QuotationDraftEditor({
         listRate: line.marketRate.trim() || undefined,
         rate: line.offerRate.trim(),
         pricingBasis: line.pricingBasis || undefined,
+        gstPercent: line.gstPercent,
         // Keep existing value if present; delivery dates are not edited on the quotation card.
         expectedDeliveryDate: line.expectedDeliveryDate.trim() || undefined,
       })),
@@ -332,7 +351,7 @@ export function QuotationDraftEditor({
                   Line total <span className="font-semibold">₹{lineTotal}</span>
                 </p>
               </div>
-              <div className="mt-3 grid gap-3 sm:grid-cols-3">
+              <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 <Field label={`List price (₹ / ${line.uom})`} detail="Reference">
                   <input
                     className={controlClass}
@@ -369,6 +388,21 @@ export function QuotationDraftEditor({
                     <option value="PER_PIECE">Per piece</option>
                   </select>
                 </Field>
+                <Field label="GST" detail="From product">
+                  <select
+                    className={controlClass}
+                    value={line.gstPercent}
+                    disabled={!canEdit}
+                    onChange={(e) =>
+                      updateLine(index, {
+                        gstPercent: e.target.value === "5" ? "5" : "18",
+                      })
+                    }
+                  >
+                    <option value="5">5%</option>
+                    <option value="18">18%</option>
+                  </select>
+                </Field>
               </div>
               {market > 0 && offer > 0 && disc > maxDiscount ? (
                 <p className="mt-2 text-xs text-amber-800 dark:text-amber-200">
@@ -392,13 +426,8 @@ export function QuotationDraftEditor({
               onChange={(e) => setValidUntil(e.target.value)}
             />
           </Field>
-          <Field label="GST %">
-            <input
-              className={controlClass}
-              value={gstPercent}
-              disabled={!canEdit}
-              onChange={(e) => setGstPercent(e.target.value)}
-            />
+          <Field label="GST (header)" detail="Auto from products">
+            <input className={controlClass} value={`${gstPercent}%`} disabled readOnly />
           </Field>
           <Field label="Freight">
             <select

@@ -14,7 +14,13 @@ import {
   type BusinessKind,
 } from "@/lib/domain/business-categories";
 import { listAllProductCategories } from "@/modules/masters/categories";
-import { listAllCatalogProducts, listAllUnits, listCatalogPlants } from "@/modules/masters/product-catalog";
+import {
+  listDistinctCatalogProducts,
+  listDistinctUnits,
+  listCatalogPlants,
+  dedupeProductsBySku,
+  listAllCatalogProducts,
+} from "@/modules/masters/product-catalog";
 import { listAllGrades, listAllFinishes } from "@/modules/masters/grades-finishes";
 import { listAllSpecOptions } from "@/modules/masters/spec-options";
 import { GradeMasterTable } from "@/components/masters/grade-master-table";
@@ -41,9 +47,11 @@ export default async function ProductsHubPage({
   const query = q.trim();
 
   const [catalogProducts, categories, units, grades, finishes, specOptions, catalogPlants] = await Promise.all([
-    listAllCatalogProducts({ q: query || undefined }),
+    plantId
+      ? listAllCatalogProducts({ q: query || undefined })
+      : listDistinctCatalogProducts({ q: query || undefined, preferPlantIds: session.plantIds }),
     listAllProductCategories({ activeOnly: false }),
-    listAllUnits(),
+    listDistinctUnits(),
     tab === "grades" ? listAllGrades({ plantIds: session.plantIds, q: query || undefined }) : Promise.resolve([]),
     tab === "finishes" ? listAllFinishes({ plantIds: session.plantIds, q: query || undefined }) : Promise.resolve([]),
     tab === "specs" ? listAllSpecOptions({ plantIds: session.plantIds, q: query || undefined }) : Promise.resolve([]),
@@ -51,18 +59,20 @@ export default async function ProductsHubPage({
   ]);
   const decoratedCategories = decorateCategories(categories);
 
-  const filteredCatalog = catalogProducts.filter((row) => {
-    if (plantId && row.plant.id !== plantId) return false;
-    const kind = inferBusinessKindForProduct({
-      sku: row.sku,
-      name: row.name,
-      productType: row.productType,
-      supplyMode: row.supplyMode,
-      category: row.category,
-    });
-    if (business && kind !== business) return false;
-    return true;
-  });
+  const filteredCatalog = dedupeProductsBySku(
+    catalogProducts.filter((row) => {
+      if (plantId && row.plant.id !== plantId) return false;
+      const kind = inferBusinessKindForProduct({
+        sku: row.sku,
+        name: row.name,
+        productType: row.productType,
+        supplyMode: row.supplyMode,
+        category: row.category,
+      });
+      if (business && kind !== business) return false;
+      return true;
+    }),
+  );
 
   const filteredCategories = decoratedCategories.filter((row) => {
     if (business && row.businessKind !== business) return false;
@@ -137,12 +147,11 @@ export default async function ProductsHubPage({
                 />
               ),
             },
-            { id: "plant", header: "Plant", cell: (row) => row.plant.name },
             { id: "grade", header: "Grade", cell: (row) => row.variants[0]?.grade ?? "—" },
             { id: "finish", header: "Finish", cell: (row) => row.variants[0]?.finish ?? "—" },
             { id: "width", header: "Width", cell: (row) => row.variants[0]?.widthMm?.toString() ?? "—" },
             { id: "length", header: "Length", cell: (row) => row.variants[0]?.lengthMm?.toString() ?? "—" },
-            { id: "unit", header: "Base unit", cell: (row) => row.baseUnit?.symbol ?? "—" },
+            { id: "unit", header: "Default UOM", cell: (row) => row.baseUnit?.symbol ?? "—" },
             {
               id: "actions",
               header: "Action",
@@ -153,13 +162,13 @@ export default async function ProductsHubPage({
             },
           ]}
           rows={filteredCatalog}
-          getRowKey={(row) => row.id}
+          getRowKey={(row) => row.sku.toUpperCase()}
           getRowHref={(row) => `/products/catalog/${row.id}`}
           emptyTitle={query || business ? "No products match these filters" : "No product families yet"}
           emptyDetail={
             query || business
               ? "Clear filters to see the full catalog."
-              : "Create a product under Trading Products or Manufactured Products."
+              : "Shared product catalog — one row per SKU across plants."
           }
         />
       ) : null}
@@ -233,9 +242,9 @@ export default async function ProductsHubPage({
             { id: "type", header: "Type", cell: (row) => row.unitType },
           ]}
           rows={units}
-          getRowKey={(row) => row.id}
+          getRowKey={(row) => row.symbol.toUpperCase()}
           emptyTitle="No units"
-          emptyDetail="Units are seeded (KG, T, PCS, M). Used on products, orders, and BOM lines."
+          emptyDetail="Shared UOM catalog (KG, T, PCS, M, FT, IN). Same symbols apply across plants."
         />
       ) : null}
     </DeskListShell>

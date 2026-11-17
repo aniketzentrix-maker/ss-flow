@@ -10,6 +10,8 @@ function normalizeBody(body: z.infer<typeof createProductSchema>) {
     name: body.name,
     businessKind: body.businessKind,
     baseUnitSymbol: body.baseUnitSymbol?.trim() ?? "",
+    allowedUomSymbols: body.allowedUomSymbols?.map((s) => s.trim().toUpperCase()).filter(Boolean),
+    gstPercent: body.gstPercent,
     description: optional(body.description),
     specs: Object.fromEntries(
       Object.entries(body.specs ?? {})

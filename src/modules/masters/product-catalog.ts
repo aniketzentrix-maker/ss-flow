@@ -8,6 +8,8 @@ import { audit, nextNumber, runCommand } from "@/lib/inventory/post";
 import { BUSINESS_ROOTS } from "@/lib/domain/business-categories";
 import { legacyCategoryFromProductType } from "@/lib/domain/master-entities";
 import { allow } from "@/modules/shared/allow";
+import { normalizeProductGst } from "@/lib/domain/gst";
+import { syncAllowedUomsBySku } from "@/modules/uom/product-uoms";
 import { normalizeMasterName, validateSpecificationCompatibility } from "./grades-finishes";
 
 export type CreateDeskProductInput = {
@@ -15,6 +17,10 @@ export type CreateDeskProductInput = {
   name: string;
   businessKind: "trading" | "manufactured";
   baseUnitSymbol: string;
+  /** Symbols shown in lead/order UOM dropdowns. Defaults to [baseUnitSymbol]. */
+  allowedUomSymbols?: string[];
+  /** GST slab: "5" or "18". */
+  gstPercent?: string;
   description?: string;
   specs?: Record<string, string>;
 };
@@ -197,6 +203,7 @@ export async function createDeskProduct(session: SessionUser, input: CreateDeskP
       const productId = uuidv7();
       const materialId = uuidv7();
       const variantId = uuidv7();
+      const gstPercent = normalizeProductGst(input.gstPercent);
 
       await tx.product.create({
         data: {
@@ -208,6 +215,7 @@ export async function createDeskProduct(session: SessionUser, input: CreateDeskP
           productType,
           supplyMode,
           baseUnitId: unitId,
+          gstPercent: new Prisma.Decimal(gstPercent),
           description: input.description?.trim() || null,
           trackInventory: true,
           isActive: true,
@@ -226,6 +234,7 @@ export async function createDeskProduct(session: SessionUser, input: CreateDeskP
           shape: productShape,
           description: input.description?.trim() || null,
           uom: unitRow.symbol,
+          taxRate: new Prisma.Decimal(gstPercent),
           grade: specs.grade?.trim() || null,
           thickness: specs.thickness || null,
           width: specs.width || null,
@@ -296,6 +305,18 @@ export async function createDeskProduct(session: SessionUser, input: CreateDeskP
         },
       });
 
+      const allowedSymbols = [
+        ...new Set(
+          (input.allowedUomSymbols?.length ? input.allowedUomSymbols : [unitRow.symbol]).map((s) =>
+            s.trim().toUpperCase(),
+          ),
+        ),
+      ];
+      if (!allowedSymbols.includes(unitRow.symbol.toUpperCase())) {
+        allowedSymbols.unshift(unitRow.symbol.toUpperCase());
+      }
+      await syncAllowedUomsBySku(tx, sku, allowedSymbols, unitRow.symbol);
+
       await audit(tx, {
         userId: session.userId,
         action: "product.create",
@@ -314,7 +335,7 @@ export async function updateDeskProduct(
   key: string | null,
 ) {
   allow(session, "plant.manage");
-  const plantId = primaryPlant(session);
+  const plantIds = await plantIdsForSession(session);
   if (input.businessKind !== "trading" && input.businessKind !== "manufactured") {
     throw new AppError(400, "VALIDATION", "Invalid business category.");
   }
@@ -324,15 +345,31 @@ export async function updateDeskProduct(
     route: "product.update",
     key,
     run: async (tx) => {
-      const existing = await tx.product.findFirst({
-        where: { id: productId, plantId },
+      // Resolve the editable row: exact id, or same-SKU twin in an accessible plant.
+      let existing = await tx.product.findFirst({
+        where: { id: productId },
         include: { variants: { include: { materialMaster: true } } },
       });
       if (!existing) throw new AppError(404, "NOT_FOUND", "Product was not found.");
+      if (plantIds.length && !plantIds.includes(existing.plantId)) {
+        const twin = await tx.product.findFirst({
+          where: {
+            plantId: { in: plantIds },
+            sku: { equals: existing.sku, mode: "insensitive" },
+            isActive: true,
+          },
+          include: { variants: { include: { materialMaster: true } } },
+          orderBy: { createdAt: "asc" },
+        });
+        if (twin) existing = twin;
+      }
+      const plantId = existing.plantId;
+      const editableId = existing.id;
+
       const primaryVariant = existing.variants.find((variant) => variant.sku === existing.sku) ?? existing.variants[0];
       const sku = input.sku?.trim().toUpperCase() || existing.sku;
       const duplicate = await tx.product.findFirst({
-        where: { plantId, id: { not: productId }, sku: { equals: sku, mode: "insensitive" } },
+        where: { plantId, id: { not: editableId }, sku: { equals: sku, mode: "insensitive" } },
       });
       if (duplicate) throw new AppError(409, "DUPLICATE", "Product SKU already exists.");
       const stockDuplicate = await tx.materialMaster.findFirst({
@@ -353,9 +390,22 @@ export async function updateDeskProduct(
       const supplyMode = input.businessKind === "trading" ? "purchased" : "manufactured";
       const legacyCategory = legacyCategoryFromProductType(productType);
       const specs = input.specs ?? {};
+      const gstPercent = normalizeProductGst(input.gstPercent);
+      const gstDecimal = new Prisma.Decimal(gstPercent);
+      // Keep existing leaf category when present; only fall back to business root if unset.
+      const nextCategoryId = existing.categoryId ?? root.id;
       await tx.product.update({
-        where: { id: productId },
-        data: { sku, name: input.name.trim(), categoryId: root.id, productType, supplyMode, baseUnitId: unit.id, description: input.description?.trim() || null },
+        where: { id: editableId },
+        data: {
+          sku,
+          name: input.name.trim(),
+          categoryId: nextCategoryId,
+          productType,
+          supplyMode,
+          baseUnitId: unit.id,
+          gstPercent: gstDecimal,
+          description: input.description?.trim() || null,
+        },
       });
       if (primaryVariant) {
         await tx.productVariant.update({
@@ -365,12 +415,94 @@ export async function updateDeskProduct(
         if (primaryVariant.materialMasterId) {
           await tx.materialMaster.update({
             where: { id: primaryVariant.materialMasterId },
-            data: { code: sku, name: input.name.trim(), category: legacyCategory, categoryId: root.id, productType, description: input.description?.trim() || null, uom: unit.symbol, grade: specs.grade?.trim() || null, thickness: specs.thickness || null, width: specs.width || null, length: specs.length || null, diameter: specs.diameter || null, weightPerPiece: specs.netWeightKg || null, purchaseAllowed: supplyMode !== "manufactured", manufacturingAllowed: supplyMode !== "purchased", specs },
+            data: { code: sku, name: input.name.trim(), category: legacyCategory, categoryId: nextCategoryId, productType, description: input.description?.trim() || null, uom: unit.symbol, taxRate: gstDecimal, grade: specs.grade?.trim() || null, thickness: specs.thickness || null, width: specs.width || null, length: specs.length || null, diameter: specs.diameter || null, weightPerPiece: specs.netWeightKg || null, purchaseAllowed: supplyMode !== "manufactured", manufacturingAllowed: supplyMode !== "purchased", specs },
           });
         }
       }
-      await audit(tx, { userId: session.userId, action: "product.update", resource: "product", resourceId: productId });
-      return { id: productId, sku };
+
+      // Mirror core fields to same-SKU rows in other plants (universal catalog).
+      const siblings = await tx.product.findMany({
+        where: {
+          id: { not: editableId },
+          sku: { equals: existing.sku, mode: "insensitive" },
+          isActive: true,
+        },
+        include: { variants: { include: { materialMaster: true } }, baseUnit: true },
+      });
+      for (const sibling of siblings) {
+        const siblingUnit =
+          (await tx.unitOfMeasure.findFirst({
+            where: { plantId: sibling.plantId, symbol: unit.symbol, isActive: true },
+          })) ?? sibling.baseUnit;
+        await tx.product.update({
+          where: { id: sibling.id },
+          data: {
+            sku,
+            name: input.name.trim(),
+            productType,
+            supplyMode,
+            gstPercent: gstDecimal,
+            description: input.description?.trim() || null,
+            ...(siblingUnit ? { baseUnitId: siblingUnit.id } : {}),
+          },
+        });
+        const siblingVariant =
+          sibling.variants.find((variant) => variant.sku === sibling.sku) ?? sibling.variants[0];
+        if (siblingVariant && siblingUnit) {
+          await tx.productVariant.update({
+            where: { id: siblingVariant.id },
+            data: {
+              sku,
+              unitId: siblingUnit.id,
+              grade: specs.grade?.trim() || null,
+              thicknessMm: specs.thickness || null,
+              widthMm: specs.width || null,
+              lengthMm: specs.length || null,
+              diameterMm: specs.diameter || null,
+              finish: specs.finish?.trim() || null,
+              attributes: specs,
+            },
+          });
+          if (siblingVariant.materialMasterId) {
+            await tx.materialMaster.update({
+              where: { id: siblingVariant.materialMasterId },
+              data: {
+                code: sku,
+                name: input.name.trim(),
+                productType,
+                description: input.description?.trim() || null,
+                uom: siblingUnit.symbol,
+                taxRate: gstDecimal,
+                grade: specs.grade?.trim() || null,
+                thickness: specs.thickness || null,
+                width: specs.width || null,
+                length: specs.length || null,
+                diameter: specs.diameter || null,
+                weightPerPiece: specs.netWeightKg || null,
+                purchaseAllowed: supplyMode !== "manufactured",
+                manufacturingAllowed: supplyMode !== "purchased",
+                specs,
+              },
+            });
+          }
+        }
+      }
+
+      const allowedSymbols = [
+        ...new Set(
+          (input.allowedUomSymbols?.length ? input.allowedUomSymbols : [unit.symbol]).map((s) =>
+            s.trim().toUpperCase(),
+          ),
+        ),
+      ];
+      if (!allowedSymbols.includes(unit.symbol.toUpperCase())) {
+        allowedSymbols.unshift(unit.symbol.toUpperCase());
+      }
+      // Universal: same SKU across plants gets the same allowed UOM set.
+      await syncAllowedUomsBySku(tx, sku, allowedSymbols, unit.symbol);
+
+      await audit(tx, { userId: session.userId, action: "product.update", resource: "product", resourceId: editableId });
+      return { id: editableId, sku };
     },
   });
 }
@@ -406,10 +538,12 @@ export async function createCatalogProduct(
 }
 
 export async function listUnits(plantIds: string[]) {
-  return prisma.unitOfMeasure.findMany({
+  const rows = await prisma.unitOfMeasure.findMany({
     where: { plantId: { in: plantIds }, isActive: true },
     orderBy: { name: "asc" },
   });
+  // Same symbol is stored per plant for FK isolation; UI/dropdowns show one shared list.
+  return dedupeUnitsBySymbol(rows);
 }
 
 export async function listAllCatalogProducts(options?: { q?: string }) {
@@ -446,6 +580,45 @@ export async function listAllCatalogProducts(options?: { q?: string }) {
     },
     orderBy: { createdAt: "desc" },
   });
+}
+
+/** One catalog row per SKU — avoids plant-level duplicates in the universal product list. */
+export function dedupeProductsBySku<T extends { sku: string; createdAt?: Date }>(
+  rows: T[],
+  preferPlantIds?: string[],
+): T[] {
+  const preferred = new Set(preferPlantIds ?? []);
+  const ranked = preferred.size
+    ? [...rows].sort((a, b) => {
+        const aPlant = "plant" in a && a.plant && typeof a.plant === "object" && "id" in a.plant
+          ? String((a.plant as { id: string }).id)
+          : "plantId" in a
+            ? String((a as { plantId: string }).plantId)
+            : "";
+        const bPlant = "plant" in b && b.plant && typeof b.plant === "object" && "id" in b.plant
+          ? String((b.plant as { id: string }).id)
+          : "plantId" in b
+            ? String((b as { plantId: string }).plantId)
+            : "";
+        const aPref = preferred.has(aPlant) ? 0 : 1;
+        const bPref = preferred.has(bPlant) ? 0 : 1;
+        return aPref - bPref;
+      })
+    : rows;
+
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const row of ranked) {
+    const key = row.sku.trim().toUpperCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(row);
+  }
+  return out;
+}
+
+export async function listDistinctCatalogProducts(options?: { q?: string; preferPlantIds?: string[] }) {
+  return dedupeProductsBySku(await listAllCatalogProducts(options), options?.preferPlantIds);
 }
 
 export async function listCatalogPlants() {
@@ -512,23 +685,72 @@ export async function listCatalogProducts(plantIds: string[], options?: { q?: st
   });
 }
 
-export async function getCatalogProduct(id: string, plantIds: string[]) {
-  return prisma.product.findFirst({
-    where: { id, plantId: { in: plantIds } },
+const catalogProductInclude = {
+  category: {
+    include: { parent: { select: { id: true, name: true, code: true, parent: { select: { code: true, name: true } } } } },
+  },
+  baseUnit: true,
+  variants: {
     include: {
-      category: {
-        include: { parent: { select: { id: true, name: true, code: true, parent: { select: { code: true, name: true } } } } },
-      },
-      baseUnit: true,
-      variants: {
-        include: {
-          unit: true,
-          materialMaster: { select: { id: true, code: true, active: true } },
-        },
-        orderBy: { sku: "asc" },
-      },
+      unit: true,
+      materialMaster: { select: { id: true, code: true, active: true } },
     },
+    orderBy: { sku: "asc" as const },
+  },
+} satisfies Prisma.ProductInclude;
+
+async function withAllowedUoms<T extends { id: string; plantId: string }>(product: T) {
+  const allowedUoms = await prisma.productUom.findMany({
+    where: {
+      productId: product.id,
+      plantId: product.plantId,
+      isActive: true,
+      unit: { isActive: true },
+    },
+    include: { unit: { select: { id: true, symbol: true, name: true, unitType: true } } },
+    orderBy: [{ isDefault: "desc" }, { unit: { symbol: "asc" } }],
   });
+  return { ...product, allowedUoms };
+}
+
+/**
+ * Resolve a catalog product for the universal product UI.
+ * Prefers the requested id in the caller's plants; if the list linked a
+ * cross-plant duplicate, falls back to the same SKU in an accessible plant,
+ * then to the exact id (read-only fallback for plant.manage catalog).
+ */
+export async function getCatalogProduct(id: string, plantIds: string[]) {
+  const scoped = await prisma.product.findFirst({
+    where: { id, plantId: { in: plantIds } },
+    include: catalogProductInclude,
+  });
+  if (scoped) return withAllowedUoms(scoped);
+
+  const any = await prisma.product.findFirst({
+    where: { id },
+    select: { id: true, sku: true, isActive: true },
+  });
+  if (!any) return null;
+
+  if (plantIds.length) {
+    const twin = await prisma.product.findFirst({
+      where: {
+        plantId: { in: plantIds },
+        sku: { equals: any.sku, mode: "insensitive" },
+        isActive: true,
+      },
+      include: catalogProductInclude,
+      orderBy: { createdAt: "asc" },
+    });
+    if (twin) return withAllowedUoms(twin);
+  }
+
+  // Universal catalog: still open the requested row so edit/detail are not 404.
+  const fallback = await prisma.product.findFirst({
+    where: { id },
+    include: catalogProductInclude,
+  });
+  return fallback ? withAllowedUoms(fallback) : null;
 }
 
 export async function listVariantsForProduct(productId: string, plantIds: string[]) {

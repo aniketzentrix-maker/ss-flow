@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   computeLineAmount,
+  computeQuotationTotals,
   lineDiscountPct,
   quotationNeedsDiscountApproval,
   quotationNeedsPricingApproval,
@@ -35,5 +36,22 @@ describe("quotation pricing", () => {
     assert.equal(quotationNeedsPricingApproval([{ rate: "0" }]), true);
     assert.equal(quotationNeedsPricingApproval([{ rate: "" }]), false);
     assert.equal(quotationNeedsPricingApproval([]), false);
+  });
+
+  it("applies per-line GST slabs of 5% and 18%", () => {
+    const totals = computeQuotationTotals({
+      lines: [
+        { amount: "1000", gstPercent: "5" },
+        { amount: "1000", gstPercent: "18" },
+      ],
+      freightAmount: "0",
+      loadingCharges: "0",
+      gstPercent: "18",
+    });
+    assert.equal(totals.subtotal, "2000.00");
+    assert.equal(totals.taxBreakup.gstAmount, "230.00");
+    assert.equal(totals.total, "2230.00");
+    assert.equal(totals.taxBreakup.bySlab?.["5"], "50.00");
+    assert.equal(totals.taxBreakup.bySlab?.["18"], "180.00");
   });
 });

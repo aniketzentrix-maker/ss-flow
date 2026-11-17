@@ -165,6 +165,7 @@ export function serializeQuotation(row: Awaited<ReturnType<typeof quotationDetai
       pricingBasis: item.pricingBasis,
       discountPct: item.discountPct?.toString() ?? null,
       amount: item.amount.toString(),
+      gstPercent: item.gstPercent.toString(),
       expectedDeliveryDate: item.expectedDeliveryDate?.toISOString().slice(0, 10) ?? null,
       product: item.product,
       leadItem: item.leadItem

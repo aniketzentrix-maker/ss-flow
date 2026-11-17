@@ -32,6 +32,7 @@ import {
   buildLeadItemLineDescription,
   buildLeadItemSizeColumn,
 } from "@/modules/leads/quotations/line-description";
+import { normalizeProductGst } from "@/lib/domain/gst";
 
 type Tx = Prisma.TransactionClient;
 
@@ -46,6 +47,7 @@ export type QuotationLineWrite = {
   listRate?: string;
   rate: string;
   pricingBasis?: string;
+  gstPercent?: string;
   expectedDeliveryDate?: string;
 };
 
@@ -86,8 +88,8 @@ async function loadLeadForQuote(tx: Tx, leadId: string, plantIds: string[]) {
       items: {
         orderBy: { id: "asc" },
         include: {
-          product: { select: { name: true, code: true, grade: true, sellingPrice: true } },
-          parentProduct: { select: { name: true, sku: true } },
+          product: { select: { name: true, code: true, grade: true, sellingPrice: true, taxRate: true } },
+          parentProduct: { select: { name: true, sku: true, gstPercent: true } },
           productVariant: { select: { displayName: true, sku: true } },
         },
       },
@@ -158,6 +160,12 @@ function linesFromLeadItems(
     };
     const gradeCol = buildLeadItemGradeColumn(lineSource);
     const sizeCol = buildLeadItemSizeColumn(lineSource);
+    const gstFromProduct =
+      item.parentProduct?.gstPercent != null
+        ? normalizeProductGst(item.parentProduct.gstPercent.toString())
+        : item.product?.taxRate != null
+          ? normalizeProductGst(item.product.taxRate.toString())
+          : "18";
     return {
       leadItemId: item.id,
       productId: item.productId ?? undefined,
@@ -169,6 +177,7 @@ function linesFromLeadItems(
       listRate: list,
       rate,
       pricingBasis: item.pricingBasis ?? undefined,
+      gstPercent: gstFromProduct,
       expectedDeliveryDate: dateOnlyIso(item.expectedDeliveryDate),
     };
   });
@@ -190,6 +199,7 @@ async function buildItemRows(tx: Tx, plantId: string, lines: QuotationLineWrite[
     pricingBasis: string | null;
     discountPct: Decimal | null;
     amount: Decimal;
+    gstPercent: Decimal;
     expectedDeliveryDate: Date | null;
   }[] = [];
 
@@ -200,13 +210,14 @@ async function buildItemRows(tx: Tx, plantId: string, lines: QuotationLineWrite[
     let grade = line.grade?.trim() || null;
     let size = line.size?.trim() || null;
     let expectedDeliveryDate = parseOptionalDateOnly(line.expectedDeliveryDate);
+    let gstPercent = line.gstPercent ? normalizeProductGst(line.gstPercent) : null;
 
     if (line.leadItemId) {
       const leadItem = await tx.leadItem.findFirst({
         where: { id: line.leadItemId },
         include: {
-          product: { select: { name: true, code: true, grade: true } },
-          parentProduct: { select: { name: true, sku: true } },
+          product: { select: { name: true, code: true, grade: true, taxRate: true } },
+          parentProduct: { select: { name: true, sku: true, gstPercent: true } },
           productVariant: { select: { displayName: true, sku: true } },
         },
       });
@@ -230,6 +241,14 @@ async function buildItemRows(tx: Tx, plantId: string, lines: QuotationLineWrite[
         if (!expectedDeliveryDate && leadItem.expectedDeliveryDate) {
           expectedDeliveryDate = leadItem.expectedDeliveryDate;
         }
+        if (!gstPercent) {
+          gstPercent =
+            leadItem.parentProduct?.gstPercent != null
+              ? normalizeProductGst(leadItem.parentProduct.gstPercent.toString())
+              : leadItem.product?.taxRate != null
+                ? normalizeProductGst(leadItem.product.taxRate.toString())
+                : null;
+        }
       }
     }
 
@@ -238,6 +257,9 @@ async function buildItemRows(tx: Tx, plantId: string, lines: QuotationLineWrite[
         where: { id: productId, plantId, active: true, salesAllowed: true },
       });
       if (!product) throw new AppError(400, "VALIDATION", "Each line must reference an active sales product.");
+      if (!gstPercent && product.taxRate != null) {
+        gstPercent = normalizeProductGst(product.taxRate.toString());
+      }
     }
     const listNum = line.listRate ? Number(line.listRate) : 0;
     const rateNum = Number(line.rate);
@@ -245,6 +267,7 @@ async function buildItemRows(tx: Tx, plantId: string, lines: QuotationLineWrite[
       throw new AppError(400, "VALIDATION", "Each line needs a valid rate.");
     }
     const amount = computeLineAmount(line.qty, line.rate);
+    const resolvedGst = normalizeProductGst(gstPercent);
     rows.push({
       id: uuidv7(),
       sortOrder: i,
@@ -260,20 +283,44 @@ async function buildItemRows(tx: Tx, plantId: string, lines: QuotationLineWrite[
       pricingBasis: line.pricingBasis?.trim().toUpperCase() || null,
       discountPct: listNum > 0 ? new Decimal(lineDiscountPct(listNum, rateNum)) : null,
       amount: new Decimal(amount),
+      gstPercent: new Decimal(resolvedGst),
       expectedDeliveryDate,
     });
   }
   return rows;
 }
 
-function headerTotals(input: QuotationHeaderWrite, itemRows: { amount: Decimal }[]) {
+function dominantGstPercent(itemRows: { gstPercent: Decimal }[], fallback?: string) {
+  const counts = new Map<string, number>();
+  for (const row of itemRows) {
+    const key = normalizeProductGst(row.gstPercent.toString());
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  let best = normalizeProductGst(fallback);
+  let bestCount = -1;
+  for (const [key, count] of counts) {
+    if (count > bestCount) {
+      best = key as "5" | "18";
+      bestCount = count;
+    }
+  }
+  return best;
+}
+
+function headerTotals(input: QuotationHeaderWrite, itemRows: { amount: Decimal; gstPercent: Decimal }[]) {
+  const headerGst = input.gstPercent
+    ? normalizeProductGst(input.gstPercent)
+    : dominantGstPercent(itemRows, "18");
   const totals = computeQuotationTotals({
-    lines: itemRows.map((row) => ({ amount: row.amount.toString() })),
+    lines: itemRows.map((row) => ({
+      amount: row.amount.toString(),
+      gstPercent: normalizeProductGst(row.gstPercent.toString()),
+    })),
     freightAmount: input.freightAmount ?? "0",
     loadingCharges: input.loadingCharges ?? "0",
-    gstPercent: input.gstPercent ?? "18",
+    gstPercent: headerGst,
   });
-  return totals;
+  return { ...totals, headerGst };
 }
 
 async function syncLeadAfterQuoteSend(
@@ -341,6 +388,7 @@ export async function createQuotationDraft(
             listRate: item.listRate?.toString(),
             rate: item.rate.toString(),
             pricingBasis: item.pricingBasis ?? undefined,
+            gstPercent: normalizeProductGst(item.gstPercent?.toString()),
             expectedDeliveryDate: dateOnlyIso(item.expectedDeliveryDate),
           }));
         }
@@ -375,7 +423,7 @@ export async function createQuotationDraft(
           deliveryTimeDays: input.deliveryTimeDays ?? null,
           freightAmount: new Decimal(input.freightAmount ?? "0"),
           loadingCharges: new Decimal(input.loadingCharges ?? "0"),
-          gstPercent: new Decimal(input.gstPercent ?? "18"),
+          gstPercent: new Decimal(totals.headerGst),
           taxBreakup: totals.taxBreakup as Prisma.InputJsonObject,
           subtotal: new Decimal(totals.subtotal),
           total: new Decimal(totals.total),
@@ -452,7 +500,7 @@ export async function updateQuotationDraft(
           deliveryTimeDays: input.deliveryTimeDays ?? null,
           freightAmount: new Decimal(input.freightAmount ?? "0"),
           loadingCharges: new Decimal(input.loadingCharges ?? "0"),
-          gstPercent: new Decimal(input.gstPercent ?? existing.gstPercent.toString()),
+          gstPercent: new Decimal(totals.headerGst),
           taxBreakup: totals.taxBreakup as Prisma.InputJsonObject,
           subtotal: new Decimal(totals.subtotal),
           total: new Decimal(totals.total),
@@ -667,16 +715,19 @@ export async function reviseQuotation(session: SessionUser, quotationId: string,
         listRate: item.listRate?.toString(),
         rate: item.rate.toString(),
         pricingBasis: item.pricingBasis ?? undefined,
+        gstPercent: normalizeProductGst(item.gstPercent?.toString()),
         expectedDeliveryDate: dateOnlyIso(item.expectedDeliveryDate),
       }));
 
       const itemRows = await buildItemRows(tx, source.plantId, lines);
-      const totals = computeQuotationTotals({
-        lines: itemRows.map((row) => ({ amount: row.amount.toString() })),
-        freightAmount: source.freightAmount.toString(),
-        loadingCharges: source.loadingCharges.toString(),
-        gstPercent: source.gstPercent.toString(),
-      });
+      const totals = headerTotals(
+        {
+          freightAmount: source.freightAmount.toString(),
+          loadingCharges: source.loadingCharges.toString(),
+          gstPercent: source.gstPercent.toString(),
+        },
+        itemRows,
+      );
       const approvalRequired = quotationNeedsPricingApproval(
         itemRows.map((row) => ({
           listRate: row.listRate?.toString(),
@@ -703,7 +754,7 @@ export async function reviseQuotation(session: SessionUser, quotationId: string,
           deliveryTimeDays: source.deliveryTimeDays,
           freightAmount: source.freightAmount,
           loadingCharges: source.loadingCharges,
-          gstPercent: source.gstPercent,
+          gstPercent: new Decimal(totals.headerGst),
           taxBreakup: totals.taxBreakup as Prisma.InputJsonObject,
           subtotal: new Decimal(totals.subtotal),
           total: new Decimal(totals.total),

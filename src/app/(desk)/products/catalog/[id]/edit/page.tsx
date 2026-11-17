@@ -24,7 +24,8 @@ export default async function EditCatalogProductPage({ params }: { params: Promi
     listAllGrades({ plantIds, activeOnly: true }),
     listAllFinishes({ plantIds, activeOnly: true }),
   ]);
-  if (!product || !product.isActive) notFound();
+  if (!product) notFound();
+  const editableId = product.id;
   const kind = inferBusinessKindForProduct({
     sku: product.sku,
     name: product.name,
@@ -35,11 +36,17 @@ export default async function EditCatalogProductPage({ params }: { params: Promi
 
   const initialGrades = compatibleGrades.length ? compatibleGrades : allGrades;
   const initialFinishes = compatibleFinishes.length ? compatibleFinishes : allFinishes;
+  const defaultAttrs = (product.variants[0]?.attributes ?? {}) as Record<string, string>;
 
   return (
-    <DeskFormPage title="Edit product" detail={product.sku} backHref={`/products/catalog/${id}`} backLabel="Back to product">
+    <DeskFormPage
+      title="Edit product"
+      detail={product.sku}
+      backHref={`/products/catalog/${editableId}`}
+      backLabel="Back to product"
+    >
       <ProductCreateForm
-        productId={id}
+        productId={editableId}
         units={units.map((row) => ({ symbol: row.symbol, name: row.name }))}
         initialGrades={initialGrades.map((g) => ({ id: g.id, name: g.name }))}
         initialFinishes={initialFinishes.map((f) => ({ id: f.id, name: f.name }))}
@@ -47,8 +54,14 @@ export default async function EditCatalogProductPage({ params }: { params: Promi
           businessKind: kind,
           name: product.name,
           sku: product.sku,
-          specs: (product.variants[0]?.attributes ?? {}) as Record<string, string>,
+          specs: defaultAttrs,
           baseUnitSymbol: product.baseUnit?.symbol ?? units[0]?.symbol ?? "",
+          allowedUomSymbols: product.allowedUoms?.length
+            ? product.allowedUoms.map((row) => row.unit.symbol)
+            : product.baseUnit?.symbol
+              ? [product.baseUnit.symbol]
+              : [],
+          gstPercent: Number(product.gstPercent) === 5 ? "5" : "18",
           description: product.description ?? "",
         }}
       />

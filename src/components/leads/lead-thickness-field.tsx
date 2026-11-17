@@ -2,11 +2,16 @@
 
 import { CreatableSpecSelect } from "@/components/ui/creatable-spec-select";
 import {
-  COMMON_SWG_GAUGES,
+  COMMON_GAUGES,
   formatThicknessMm,
   gaugeInputToThicknessMm,
   gaugeLabel,
+  gaugeOptionLabel,
+  gaugeToThicknessMm,
+  parseGaugeNumber,
   snapThicknessToOptions,
+  thicknessInputToGauge,
+  thicknessMmOptions,
   THICKNESS_CONVERTED_MM_SPEC_KEY,
   THICKNESS_GAUGE_SPEC_KEY,
   THICKNESS_GAUGE_SYSTEM_SPEC_KEY,
@@ -33,7 +38,6 @@ export function LeadThicknessField({
   categoryId,
   parentProductId,
   disabled,
-  datalistId = "lead-swg-gauge-list",
 }: {
   specs: Record<string, string>;
   options: string[];
@@ -49,32 +53,84 @@ export function LeadThicknessField({
     specs[THICKNESS_INPUT_UNIT_SPEC_KEY] === "gauge" ? "gauge" : "mm";
   const gaugeRaw = specs[THICKNESS_GAUGE_SPEC_KEY] ?? "";
   const mmValue = specs.thickness ?? "";
-  const converted =
+  const mmOptions = thicknessMmOptions(options);
+  const gaugeOptions = COMMON_GAUGES.map((gauge) => ({
+    value: String(gauge),
+    label: gaugeOptionLabel(gauge),
+  }));
+
+  const convertedFromGauge =
     unit === "gauge" && gaugeRaw ? gaugeInputToThicknessMm(gaugeRaw) : null;
+  const gaugeFromMm =
+    unit === "mm" && mmValue.trim() ? thicknessInputToGauge(mmValue) : null;
 
   function setUnit(next: ThicknessInputUnit) {
-    const nextSpecs: Record<string, string> = { ...specs, [THICKNESS_INPUT_UNIT_SPEC_KEY]: next };
     if (next === "mm") {
+      const nextSpecs: Record<string, string> = {
+        ...specs,
+        [THICKNESS_INPUT_UNIT_SPEC_KEY]: "mm",
+      };
+      if (convertedFromGauge != null) {
+        const exactMm = formatThicknessMm(convertedFromGauge);
+        nextSpecs.thickness = snapThicknessToOptions(convertedFromGauge, mmOptions);
+        nextSpecs[THICKNESS_CONVERTED_MM_SPEC_KEY] = exactMm;
+        if (parseGaugeNumber(gaugeRaw) != null) {
+          nextSpecs[THICKNESS_GAUGE_SPEC_KEY] = String(parseGaugeNumber(gaugeRaw));
+          nextSpecs[THICKNESS_GAUGE_SYSTEM_SPEC_KEY] = "farma";
+        }
+        onSpecsChange(nextSpecs);
+        onGaugeThicknessMm(exactMm);
+        return;
+      }
       delete nextSpecs[THICKNESS_GAUGE_SPEC_KEY];
       delete nextSpecs[THICKNESS_GAUGE_SYSTEM_SPEC_KEY];
       delete nextSpecs[THICKNESS_CONVERTED_MM_SPEC_KEY];
-    } else {
-      nextSpecs[THICKNESS_GAUGE_SYSTEM_SPEC_KEY] = "swg";
-      if (mmValue) {
-        nextSpecs[THICKNESS_GAUGE_SPEC_KEY] = "";
-        delete nextSpecs.thickness;
+      onSpecsChange(nextSpecs);
+      onGaugeThicknessMm(mmValue.trim());
+      return;
+    }
+
+    const nextSpecs: Record<string, string> = {
+      ...specs,
+      [THICKNESS_INPUT_UNIT_SPEC_KEY]: "gauge",
+      [THICKNESS_GAUGE_SYSTEM_SPEC_KEY]: "farma",
+    };
+    if (mmValue.trim()) {
+      const matched = thicknessInputToGauge(mmValue);
+      if (matched != null) {
+        nextSpecs[THICKNESS_GAUGE_SPEC_KEY] = String(matched);
+        const exactMm = formatThicknessMm(gaugeToThicknessMm(matched)!);
+        nextSpecs[THICKNESS_CONVERTED_MM_SPEC_KEY] = exactMm;
+        nextSpecs.thickness = snapThicknessToOptions(gaugeToThicknessMm(matched)!, mmOptions);
+        onSpecsChange(nextSpecs);
+        onGaugeThicknessMm(exactMm);
+        return;
       }
+      nextSpecs[THICKNESS_GAUGE_SPEC_KEY] = "";
+      delete nextSpecs.thickness;
+      delete nextSpecs[THICKNESS_CONVERTED_MM_SPEC_KEY];
     }
     onSpecsChange(nextSpecs);
-    if (next === "mm") onGaugeThicknessMm("");
   }
 
   function applyMmThickness(thickness: string) {
-    const next: Record<string, string> = { ...specs, thickness };
-    next[THICKNESS_INPUT_UNIT_SPEC_KEY] = "mm";
-    delete next[THICKNESS_GAUGE_SPEC_KEY];
-    delete next[THICKNESS_GAUGE_SYSTEM_SPEC_KEY];
-    delete next[THICKNESS_CONVERTED_MM_SPEC_KEY];
+    const next: Record<string, string> = {
+      ...specs,
+      thickness,
+      [THICKNESS_INPUT_UNIT_SPEC_KEY]: "mm",
+    };
+    const matchedGauge = thickness.trim() ? thicknessInputToGauge(thickness) : null;
+    if (matchedGauge != null) {
+      next[THICKNESS_GAUGE_SPEC_KEY] = String(matchedGauge);
+      next[THICKNESS_GAUGE_SYSTEM_SPEC_KEY] = "farma";
+      next[THICKNESS_CONVERTED_MM_SPEC_KEY] = formatThicknessMm(
+        gaugeToThicknessMm(matchedGauge)!,
+      );
+    } else {
+      delete next[THICKNESS_GAUGE_SPEC_KEY];
+      delete next[THICKNESS_GAUGE_SYSTEM_SPEC_KEY];
+      delete next[THICKNESS_CONVERTED_MM_SPEC_KEY];
+    }
     if (!thickness.trim()) delete next.thickness;
     onSpecsChange(next);
     onGaugeThicknessMm(thickness.trim());
@@ -87,8 +143,10 @@ export function LeadThicknessField({
         ...specs,
         [THICKNESS_INPUT_UNIT_SPEC_KEY]: "gauge",
         [THICKNESS_GAUGE_SPEC_KEY]: "",
+        [THICKNESS_GAUGE_SYSTEM_SPEC_KEY]: "farma",
       };
       delete next.thickness;
+      delete next[THICKNESS_CONVERTED_MM_SPEC_KEY];
       onSpecsChange(next);
       onGaugeThicknessMm("");
       return;
@@ -97,20 +155,22 @@ export function LeadThicknessField({
       const next: Record<string, string> = {
         ...specs,
         [THICKNESS_INPUT_UNIT_SPEC_KEY]: "gauge",
-        [THICKNESS_GAUGE_SYSTEM_SPEC_KEY]: "swg",
+        [THICKNESS_GAUGE_SYSTEM_SPEC_KEY]: "farma",
         [THICKNESS_GAUGE_SPEC_KEY]: raw.trim(),
       };
       delete next.thickness;
+      delete next[THICKNESS_CONVERTED_MM_SPEC_KEY];
       onSpecsChange(next);
+      onGaugeThicknessMm("");
       return;
     }
     const exactMm = formatThicknessMm(mm);
-    const catalog = snapThicknessToOptions(mm, options);
+    const catalog = snapThicknessToOptions(mm, mmOptions);
     const next: Record<string, string> = {
       ...specs,
       [THICKNESS_INPUT_UNIT_SPEC_KEY]: "gauge",
-      [THICKNESS_GAUGE_SYSTEM_SPEC_KEY]: "swg",
-      [THICKNESS_GAUGE_SPEC_KEY]: raw.trim(),
+      [THICKNESS_GAUGE_SYSTEM_SPEC_KEY]: "farma",
+      [THICKNESS_GAUGE_SPEC_KEY]: String(parseGaugeNumber(raw) ?? raw.trim()),
       [THICKNESS_CONVERTED_MM_SPEC_KEY]: exactMm,
       thickness: catalog,
     };
@@ -130,53 +190,83 @@ export function LeadThicknessField({
           className={unitToggleClass(unit === "gauge")}
           onClick={() => setUnit("gauge")}
         >
-          Gauge (SWG)
+          Gauge
         </button>
       </div>
 
       {unit === "mm" ? (
-        <CreatableSpecSelect
-          fieldName="thickness"
-          fieldLabel="Thickness"
-          unit="mm"
-          value={mmValue}
-          disabled={disabled}
-          onChange={(val) => applyMmThickness(val)}
-          options={options}
-          canCreate={canManageProducts}
-          categoryId={categoryId}
-          productId={parentProductId}
-          ariaLabel="Thickness in mm"
-        />
+        <div className="space-y-2">
+          <CreatableSpecSelect
+            fieldName="thickness"
+            fieldLabel="Thickness"
+            unit="mm"
+            value={mmValue}
+            disabled={disabled}
+            onChange={(val) => applyMmThickness(val)}
+            options={mmOptions}
+            canCreate={canManageProducts}
+            categoryId={categoryId}
+            productId={parentProductId}
+            ariaLabel="Thickness in mm"
+            placeholder="Select or type mm…"
+          />
+          {gaugeFromMm != null ? (
+            <p className="text-xs text-muted">
+              Chart gauge:{" "}
+              <span className="font-semibold text-foreground">{gaugeLabel(gaugeFromMm)}</span>
+            </p>
+          ) : mmValue.trim() ? (
+            <p className="text-xs text-muted">No gauge on Farma chart for this mm (e.g. 5 / 6 mm).</p>
+          ) : null}
+        </div>
       ) : (
         <div className="space-y-2">
-          <input
-            className={fieldClass}
-            type="number"
-            min={1}
-            max={30}
-            step={1}
-            disabled={disabled}
-            placeholder="e.g. 20 for SWG 20"
-            value={gaugeRaw.replace(/^swg\s*/i, "")}
-            onChange={(e) => applyGauge(e.target.value)}
-            list={datalistId}
-          />
-          <datalist id={datalistId}>
-            {COMMON_SWG_GAUGES.map((g) => (
-              <option key={g} value={String(g)} label={gaugeLabel(g)} />
-            ))}
-          </datalist>
-          {converted != null ? (
+          <div className="grid gap-2 sm:grid-cols-2">
+            <select
+              className={fieldClass}
+              disabled={disabled}
+              aria-label="Select gauge from Farma chart"
+              value={
+                COMMON_GAUGES.some((g) => String(g) === gaugeRaw.replace(/^(swg|gauge)\s*/i, ""))
+                  ? gaugeRaw.replace(/^(swg|gauge)\s*/i, "")
+                  : ""
+              }
+              onChange={(event) => applyGauge(event.target.value)}
+            >
+              <option value="">Select gauge…</option>
+              {gaugeOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+            <input
+              className={fieldClass}
+              type="number"
+              min={8}
+              max={30}
+              step={1}
+              disabled={disabled}
+              aria-label="Type gauge number"
+              placeholder="Or type gauge…"
+              value={gaugeRaw.replace(/^(swg|gauge)\s*/i, "")}
+              onChange={(event) => applyGauge(event.target.value)}
+            />
+          </div>
+          {convertedFromGauge != null ? (
             <p className="text-xs text-muted">
               Converted:{" "}
-              <span className="font-semibold text-foreground">{formatThicknessMm(converted)} mm</span>
-              {specs.thickness && specs.thickness !== formatThicknessMm(converted)
+              <span className="font-semibold text-foreground">
+                {formatThicknessMm(convertedFromGauge)} mm
+              </span>
+              {specs.thickness && specs.thickness !== formatThicknessMm(convertedFromGauge)
                 ? ` · variant match ${specs.thickness} mm`
                 : null}
             </p>
           ) : gaugeRaw.trim() ? (
-            <p className="text-xs text-amber-700 dark:text-amber-200">Enter a valid SWG gauge (7–30).</p>
+            <p className="text-xs text-amber-700 dark:text-amber-200">
+              Enter a Farma chart gauge (8–30). Missing odd sizes like 17 / 15 are not on the sheet.
+            </p>
           ) : null}
         </div>
       )}

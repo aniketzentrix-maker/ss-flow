@@ -74,6 +74,10 @@ export default async function CatalogProductPage({ params }: { params: Promise<{
           <dd className="mt-1 text-sm">{product.baseUnit?.symbol ?? "—"}</dd>
         </div>
         <div>
+          <dt className="text-xs font-medium uppercase tracking-wide text-[var(--ink-muted)]">GST</dt>
+          <dd className="mt-1 text-sm">{Number(product.gstPercent) === 5 ? "5%" : "18%"}</dd>
+        </div>
+        <div>
           <dt className="text-xs font-medium uppercase tracking-wide text-[var(--ink-muted)]">Status</dt>
           <dd className="mt-1 text-sm">{product.isActive ? "Active" : "Inactive"}</dd>
         </div>

@@ -311,6 +311,8 @@ async function main() {
 
   await linkLegacyMaterialsToCatalog(plant.id);
   await ensureBusinessCategories(prisma);
+  const { ensureCategoryUoms } = await import("../src/modules/uom/ensure-category-uoms");
+  await ensureCategoryUoms(prisma);
 
   const adminUser = await prisma.user.findUniqueOrThrow({ where: { email: adminEmail } });
   await seedDemoRawMaterialStock(plant.id, adminUser.id);

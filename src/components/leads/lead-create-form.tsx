@@ -423,6 +423,10 @@ function LeadItemFields({
       itemPromisedDeliveryDate &&
       itemPromisedDeliveryDate > itemRequiredDeliveryDate,
   );
+  const [allowedUoms, setAllowedUoms] = useState<
+    { id: string; symbol: string; name: string; isDefault: boolean }[]
+  >([]);
+  const [uomsLoading, setUomsLoading] = useState(false);
 
   const visibleProducts = products.filter(
     (product) => !categoryId || product.categoryId === categoryId,
@@ -574,6 +578,50 @@ function LeadItemFields({
       ),
     ].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
 
+  useEffect(() => {
+    if (!parentProductId) {
+      setAllowedUoms([]);
+      return;
+    }
+    let cancelled = false;
+    setUomsLoading(true);
+    void (async () => {
+      try {
+        const res = await fetch(`/api/v1/products/${parentProductId}/uoms`);
+        const json = await res.json().catch(() => null);
+        if (cancelled) return;
+        if (!res.ok) {
+          setAllowedUoms([]);
+          return;
+        }
+        const allowed = (json?.data?.allowed ?? []) as {
+          id: string;
+          symbol: string;
+          name: string;
+          isDefault: boolean;
+        }[];
+        setAllowedUoms(allowed);
+        const current = (uom || "").trim().toUpperCase();
+        const stillValid = allowed.some((row) => row.symbol.toUpperCase() === current);
+        if (!stillValid) {
+          const defaultUom =
+            (json?.data?.defaultUom as { symbol?: string } | null)?.symbol ||
+            allowed.find((row) => row.isDefault)?.symbol ||
+            allowed[0]?.symbol ||
+            "";
+          setValue(`items.${index}.uom`, defaultUom);
+        }
+      } finally {
+        if (!cancelled) setUomsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Intentionally depend on parent product only; UOM reset runs when options load.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [parentProductId, index, setValue]);
+
   const syncVariantAndUom = (newSpecs: Record<string, string>) => {
     if (!config) return;
     const missing = missingRequiredSpecFields(config, newSpecs);
@@ -585,26 +633,16 @@ function LeadItemFields({
       if (best) {
         setValue(`items.${index}.productVariantId`, best.id);
         setValue(`items.${index}.productId`, best.materialMasterId);
-        // Wire auto-UOM logic
-        if (config.id === "wire") {
-          const formVal = newSpecs.productForm ?? "";
-          if (/cut/i.test(formVal)) {
-            setValue(`items.${index}.uom`, "PCS");
-          } else if (/coil/i.test(formVal)) {
-            setValue(`items.${index}.uom`, "KG");
-          } else {
-            setValue(`items.${index}.uom`, best.uom || "KG");
-          }
-        } else if (config.id === "laser_cut_farma") {
-          setValue(`items.${index}.uom`, "PCS");
-        } else {
-          setValue(`items.${index}.uom`, best.uom || "PCS");
+        // UOM comes from category mappings (loaded when parentProductId is set).
+        if (!uom && allowedUoms.length) {
+          const defaultUom =
+            allowedUoms.find((row) => row.isDefault)?.symbol || allowedUoms[0]?.symbol || "";
+          if (defaultUom) setValue(`items.${index}.uom`, defaultUom);
         }
       }
     } else {
       setValue(`items.${index}.productVariantId`, "");
       setValue(`items.${index}.productId`, "");
-      setValue(`items.${index}.uom`, "");
     }
   };
 
@@ -672,7 +710,15 @@ function LeadItemFields({
     setValue(`items.${index}.specifications`, resolvedValues);
     setValue(`items.${index}.productVariantId`, exact?.id ?? "");
     setValue(`items.${index}.productId`, exact?.materialMasterId ?? "");
-    setValue(`items.${index}.uom`, exact?.uom ?? "");
+    if (exact && allowedUoms.length) {
+      const current = (uom || "").trim().toUpperCase();
+      if (!allowedUoms.some((row) => row.symbol.toUpperCase() === current)) {
+        setValue(
+          `items.${index}.uom`,
+          allowedUoms.find((row) => row.isDefault)?.symbol || allowedUoms[0]?.symbol || "",
+        );
+      }
+    }
   };
 
   return (
@@ -731,7 +777,6 @@ function LeadItemFields({
                     `items.${index}.productId`,
                     variant.materialMasterId,
                   );
-                  setValue(`items.${index}.uom`, variant.uom);
                   setValue(
                     `items.${index}.specifications`,
                     Object.fromEntries(
@@ -795,7 +840,7 @@ function LeadItemFields({
 
             if (field.type === "select" && field.key === "thickness") {
               return (
-                <LeadField key={field.key} label={field.label} detail="Choose mm or SWG gauge — gauge is converted to mm">
+                <LeadField key={field.key} label={field.label} detail="Choose mm or gauge — Farma chart, both ways">
                   <LeadThicknessField
                     specs={selectedSpecs}
                     options={optionsFor("thickness")}
@@ -934,7 +979,6 @@ function LeadItemFields({
                       const exact = matches.length === 1 ? matches[0] : undefined;
                       setValue(`items.${index}.productVariantId`, exact?.id ?? "");
                       setValue(`items.${index}.productId`, exact?.materialMasterId ?? "");
-                      setValue(`items.${index}.uom`, exact?.uom ?? "");
                     }}
                   />
                 </LeadField>
@@ -942,7 +986,7 @@ function LeadItemFields({
                 <LeadField
                   key={key}
                   label={specLabel(key)}
-                  detail="Choose mm or SWG gauge — gauge is converted to mm"
+                  detail="Choose mm or gauge — Farma chart, both ways"
                 >
                   <LeadThicknessField
                     specs={selectedSpecs}
@@ -964,7 +1008,6 @@ function LeadItemFields({
                       const exact = matches.length === 1 ? matches[0] : undefined;
                       setValue(`items.${index}.productVariantId`, exact?.id ?? "");
                       setValue(`items.${index}.productId`, exact?.materialMasterId ?? "");
-                      setValue(`items.${index}.uom`, exact?.uom ?? "");
                     }}
                   />
                 </LeadField>
@@ -1009,7 +1052,7 @@ function LeadItemFields({
                   <LeadField
                     key={key}
                     label={specLabel(key)}
-                    detail="Choose mm or SWG gauge — gauge is converted to mm"
+                    detail="Choose mm or gauge — Farma chart, both ways"
                   >
                     <LeadThicknessField
                       specs={selectedSpecs}
@@ -1068,18 +1111,40 @@ function LeadItemFields({
             {...register(`items.${index}.quantity`)}
           />
         </LeadField>
-        <LeadField label="UOM">
-          <input
-            className={`${fieldClass} ${!isSpecComplete ? "bg-muted/50 cursor-not-allowed opacity-75" : ""}`}
-            readOnly={!isSpecComplete}
-            disabled={!isSpecComplete}
-            value={isSpecComplete ? (uom || "") : "Select a valid specification"}
-            onChange={(event) => {
-              if (isSpecComplete) {
-                setValue(`items.${index}.uom`, event.target.value);
-              }
-            }}
-          />
+        <LeadField
+          label="UOM"
+          detail={
+            !parentProductId
+              ? "Select a product first"
+              : uomsLoading
+                ? "Loading allowed units…"
+                : allowedUoms.length
+                  ? "From category UOM configuration"
+                  : "No category UOMs configured"
+          }
+        >
+          <select
+            className={`${fieldClass} ${!isSpecComplete || !allowedUoms.length ? "bg-muted/50 cursor-not-allowed opacity-75" : ""}`}
+            disabled={!isSpecComplete || !allowedUoms.length || uomsLoading}
+            value={uom || ""}
+            onChange={(event) => setValue(`items.${index}.uom`, event.target.value)}
+          >
+            <option value="">
+              {!parentProductId
+                ? "Select product first"
+                : !isSpecComplete
+                  ? "Complete specification first"
+                  : uomsLoading
+                    ? "Loading…"
+                    : "Select UOM"}
+            </option>
+            {allowedUoms.map((row) => (
+              <option key={row.id} value={row.symbol}>
+                {row.symbol}
+                {row.isDefault ? " (default)" : ""} — {row.name}
+              </option>
+            ))}
+          </select>
         </LeadField>
         <LeadField
           label="Est. weight (kg)"

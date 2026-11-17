@@ -15,12 +15,20 @@ test("thickness display with gauge", () => {
   const parts = thicknessDisplayParts({
     thicknessInputUnit: "gauge",
     thicknessGauge: "20",
-    thicknessConvertedMm: "0.838",
-    thickness: "0.8",
+    thicknessConvertedMm: "0.9",
+    thickness: "0.9",
   });
-  assert.ok(parts?.entered?.includes("SWG 20"));
-  assert.equal(parts?.converted, "Converted: 0.838 mm");
-  assert.ok(parts?.note?.includes("0.8"));
+  assert.ok(parts?.entered?.includes("Gauge 20"));
+  assert.equal(parts?.converted, "Thickness: 0.9 mm");
+});
+
+test("thickness display from mm shows matching Farma gauge", () => {
+  const parts = thicknessDisplayParts({
+    thicknessInputUnit: "mm",
+    thickness: "0.5",
+  });
+  assert.ok(parts?.entered?.includes("Gauge 26"));
+  assert.equal(parts?.converted, "Thickness: 0.5 mm");
 });
 
 test("diameter display with inch", () => {

@@ -3,6 +3,7 @@ import { Pencil } from "lucide-react";
 import { DeskFormPage, DeskSecondaryCta } from "@/components/desk";
 import { requirePage } from "@/lib/access";
 import { BusinessKindBadge } from "@/components/masters/business-kind-badge";
+import { CategoryUomPanel } from "@/components/masters/category-uom-panel";
 import { businessKindFromCategory, isBusinessRootCode } from "@/lib/domain/business-categories";
 import { getProductCategory } from "@/modules/masters/categories";
 import { MATERIAL_SPEC_FIELDS } from "@/lib/domain/material-specifications";
@@ -70,6 +71,9 @@ export default async function CategoryDetailPage({ params }: { params: Promise<{
           <dd className="mt-1 text-sm">{category._count.products}</dd>
         </div>
       </dl>
+      <div className="mt-6">
+        <CategoryUomPanel categoryId={id} />
+      </div>
     </DeskFormPage>
   );
 }

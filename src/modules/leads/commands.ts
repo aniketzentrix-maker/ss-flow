@@ -41,6 +41,7 @@ import {
 import { normalizeLeadOrderType } from "@/modules/leads/order-type";
 import { resolveOrCreateCustomerForLead } from "@/modules/leads/resolve-customer";
 import { normalizeLeadPriority } from "@/modules/leads/status";
+import { validateProductUom } from "@/modules/uom/service";
 
 type Tx = Prisma.TransactionClient;
 
@@ -205,6 +206,18 @@ async function createLeadItems(tx: Tx, leadId: string, items: LeadItemInput[]) {
       ...(line.grade ? { grade: line.grade } : {}),
       ...(line.size ? { size: line.size } : {}),
     };
+    let unitId = line.unitId ?? null;
+    let uom = line.uom?.trim() || "PCS";
+    if (parentProductId) {
+      const validated = await validateProductUom(
+        parentProductId,
+        lead.plantId,
+        { unitId, uomSymbol: uom },
+        tx,
+      );
+      unitId = validated.unit.id;
+      uom = validated.unit.symbol;
+    }
     const createdItem = await tx.leadItem.create({
       data: {
         id: uuidv7(),
@@ -214,8 +227,8 @@ async function createLeadItems(tx: Tx, leadId: string, items: LeadItemInput[]) {
         productVariantId: line.productVariantId ?? null,
         itemDescription: line.itemDescription?.trim() || (line.productId ? null : "Requested material"),
         quantity: line.quantity,
-        unitId: line.unitId ?? null,
-        uom: line.uom ?? "PCS",
+        unitId,
+        uom,
         targetPrice: line.targetPrice ?? null,
         priceOffered: line.priceOffered ? new Decimal(line.priceOffered) : null,
         priceFinalised: line.priceFinalised ? new Decimal(line.priceFinalised) : null,

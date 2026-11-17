@@ -3,6 +3,7 @@ import {
   gaugeInputToThicknessMm,
   gaugeLabel,
   parseGaugeNumber,
+  thicknessMmToGauge,
   THICKNESS_CONVERTED_MM_SPEC_KEY,
   THICKNESS_GAUGE_SPEC_KEY,
   THICKNESS_INPUT_UNIT_SPEC_KEY,
@@ -106,29 +107,44 @@ export function thicknessDisplayParts(
   fallbackMm?: string | null,
 ): { entered?: string; converted?: string; note?: string } | null {
   const unit = specStr(specs, THICKNESS_INPUT_UNIT_SPEC_KEY);
-  if (unit !== "gauge") {
-    const mm = specStr(specs, "thickness") || fallbackMm;
-    return mm ? { converted: `${mm} mm` } : null;
-  }
-  const gaugeRaw = specStr(specs, THICKNESS_GAUGE_SPEC_KEY);
-  const gaugeNum = parseGaugeNumber(gaugeRaw);
-  const entered = gaugeNum != null ? gaugeLabel(gaugeNum) : gaugeRaw || undefined;
-  const convertedMm =
+  const mm =
     specStr(specs, THICKNESS_CONVERTED_MM_SPEC_KEY) ||
-    (gaugeRaw && gaugeInputToThicknessMm(gaugeRaw) != null
-      ? formatLinearMm(gaugeInputToThicknessMm(gaugeRaw)!)
-      : "");
-  const catalog = specStr(specs, "thickness");
-  if (!entered && !convertedMm) return null;
-  let note: string | undefined;
-  if (catalog && convertedMm && catalog !== convertedMm) {
-    note = `Catalog / variant match uses ${catalog} mm`;
+    specStr(specs, "thickness") ||
+    fallbackMm ||
+    "";
+  const gaugeRaw = specStr(specs, THICKNESS_GAUGE_SPEC_KEY);
+  const gaugeNum =
+    parseGaugeNumber(gaugeRaw) ??
+    (mm ? thicknessMmToGauge(Number(mm)) : null);
+
+  if (unit === "gauge" || gaugeNum != null) {
+    const entered =
+      gaugeNum != null
+        ? `Gauge: ${gaugeLabel(gaugeNum)}`
+        : gaugeRaw
+          ? `Gauge: ${gaugeRaw}`
+          : undefined;
+    const convertedFromGauge =
+      gaugeRaw && gaugeInputToThicknessMm(gaugeRaw) != null
+        ? formatLinearMm(gaugeInputToThicknessMm(gaugeRaw)!)
+        : gaugeNum != null && gaugeInputToThicknessMm(String(gaugeNum)) != null
+          ? formatLinearMm(gaugeInputToThicknessMm(String(gaugeNum))!)
+          : "";
+    const convertedMm = convertedFromGauge || (mm ? formatLinearMm(Number(mm)) || mm : "");
+    const catalog = specStr(specs, "thickness");
+    if (!entered && !convertedMm) return null;
+    let note: string | undefined;
+    if (catalog && convertedMm && catalog !== convertedMm) {
+      note = `Catalog / variant match uses ${catalog} mm`;
+    }
+    return {
+      entered,
+      converted: convertedMm ? `Thickness: ${convertedMm} mm` : undefined,
+      note,
+    };
   }
-  return {
-    entered: entered ? `Entered: ${entered}` : undefined,
-    converted: convertedMm ? `Converted: ${convertedMm} mm` : undefined,
-    note,
-  };
+
+  return mm ? { converted: `Thickness: ${mm} mm` } : null;
 }
 
 export function inchDimensionDisplayParts(

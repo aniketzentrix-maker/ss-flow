@@ -76,8 +76,17 @@ export function renderQuotationHtml(quote: Quote, options?: QuotationRenderOptio
     })
     .join("");
 
-  const tax = quote.taxBreakup as { gstAmount?: string; taxableAmount?: string } | null;
+  const tax = quote.taxBreakup as {
+    gstAmount?: string;
+    taxableAmount?: string;
+    bySlab?: Record<string, string>;
+  } | null;
   const gstAmount = tax?.gstAmount ?? "—";
+  const gstBySlab = tax?.bySlab
+    ? Object.entries(tax.bySlab)
+        .map(([pct, amount]) => `GST ${escapeHtml(pct)}%: ₹ ${formatInr(amount)}`)
+        .join(" · ")
+    : "";
 
   const termsBlock = [
     quote.deliveryTimeDays != null
@@ -305,7 +314,7 @@ export function renderQuotationHtml(quote: Quote, options?: QuotationRenderOptio
           <tr><td class="label">Subtotal</td><td class="num">₹ ${formatInr(quote.subtotal)}</td></tr>
           <tr><td class="label">Freight</td><td class="num">₹ ${formatInr(quote.freightAmount)}</td></tr>
           <tr><td class="label">Loading</td><td class="num">₹ ${formatInr(quote.loadingCharges)}</td></tr>
-          <tr><td class="label">GST (${escapeHtml(quote.gstPercent.toString())}%)</td><td class="num">₹ ${typeof gstAmount === "string" && gstAmount !== "—" ? formatInr(gstAmount) : escapeHtml(String(gstAmount))}</td></tr>
+          <tr><td class="label">GST${gstBySlab ? "" : ` (${escapeHtml(quote.gstPercent.toString())}%)`}${gstBySlab ? `<div style="font-size:11px;font-weight:normal;color:#555;margin-top:2px;">${gstBySlab}</div>` : ""}</td><td class="num">₹ ${typeof gstAmount === "string" && gstAmount !== "—" ? formatInr(gstAmount) : escapeHtml(String(gstAmount))}</td></tr>
           <tr><td class="label"><strong>Grand total</strong></td><td class="num"><strong>₹ ${formatInr(quote.total)}</strong></td></tr>
         </table>
       </div>

@@ -42,25 +42,48 @@ export function computeLineAmount(qty: string, rate: string) {
 }
 
 export function computeQuotationTotals(input: {
-  lines: { amount: string }[];
+  lines: { amount: string; gstPercent?: string | null }[];
   freightAmount: string;
   loadingCharges: string;
+  /** Fallback GST for lines without a slab, and for freight/loading. */
   gstPercent: string;
 }) {
   const subtotal = input.lines.reduce((sum, line) => sum + Number(line.amount || 0), 0);
   const freight = Number(input.freightAmount || 0);
   const loading = Number(input.loadingCharges || 0);
+  const headerPct = Number(input.gstPercent || 18);
   const taxable = subtotal + freight + loading;
-  const gstPct = Number(input.gstPercent || 0);
-  const gstAmount = (taxable * gstPct) / 100;
+
+  const bySlab: Record<string, number> = {};
+  let gstAmount = 0;
+  for (const line of input.lines) {
+    const amount = Number(line.amount || 0);
+    const pct = Number(line.gstPercent ?? headerPct);
+    const slabKey = String(pct);
+    const lineGst = (amount * pct) / 100;
+    gstAmount += lineGst;
+    bySlab[slabKey] = (bySlab[slabKey] || 0) + lineGst;
+  }
+
+  const extras = freight + loading;
+  if (extras) {
+    const extrasGst = (extras * headerPct) / 100;
+    gstAmount += extrasGst;
+    const slabKey = String(headerPct);
+    bySlab[slabKey] = (bySlab[slabKey] || 0) + extrasGst;
+  }
+
   const total = taxable + gstAmount;
   return {
     subtotal: subtotal.toFixed(2),
     total: total.toFixed(2),
     taxBreakup: {
-      gstPercent: gstPct,
+      gstPercent: headerPct,
       taxableAmount: taxable.toFixed(2),
       gstAmount: gstAmount.toFixed(2),
+      bySlab: Object.fromEntries(
+        Object.entries(bySlab).map(([pct, amount]) => [pct, amount.toFixed(2)]),
+      ),
     },
   };
 }

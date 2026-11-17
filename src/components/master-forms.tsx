@@ -282,6 +282,8 @@ export function ProductCreateForm({
     sku: string;
     specs: Partial<Record<ProductSpecificationKey, string>>;
     baseUnitSymbol: string;
+    allowedUomSymbols?: string[];
+    gstPercent?: string;
     description: string;
   };
   initialGrades?: { id: string; name: string }[];
@@ -316,6 +318,7 @@ export function ProductCreateForm({
     }
   }, [initialGrades, initialFinishes]);
 
+  const defaultBase = initial?.baseUnitSymbol ?? units[0]?.symbol ?? "";
   const form = useForm({
     defaultValues: {
       businessKind: (initial?.businessKind ?? "") as BusinessKind | "",
@@ -327,7 +330,13 @@ export function ProductCreateForm({
       name: initial?.name ?? "",
       sku: initial?.sku ?? "",
       specs: initial?.specs ?? {},
-      baseUnitSymbol: initial?.baseUnitSymbol ?? units[0]?.symbol ?? "",
+      baseUnitSymbol: defaultBase,
+      allowedUomSymbols: initial?.allowedUomSymbols?.length
+        ? initial.allowedUomSymbols
+        : defaultBase
+          ? [defaultBase]
+          : [],
+      gstPercent: initial?.gstPercent === "5" ? "5" : "18",
       description: initial?.description ?? "",
     },
   });
@@ -335,6 +344,25 @@ export function ProductCreateForm({
   const productType = useWatch({ control: form.control, name: "productType" });
   const currentGrade = useWatch({ control: form.control, name: "specs.grade" });
   const currentFinish = useWatch({ control: form.control, name: "specs.finish" });
+  const allowedUomSymbols = useWatch({ control: form.control, name: "allowedUomSymbols" }) ?? [];
+  const baseUnitSymbol = useWatch({ control: form.control, name: "baseUnitSymbol" });
+
+  function toggleAllowedUom(symbol: string) {
+    const current = new Set((form.getValues("allowedUomSymbols") ?? []).map((s) => s.toUpperCase()));
+    const key = symbol.toUpperCase();
+    if (current.has(key)) {
+      if (current.size <= 1) return;
+      current.delete(key);
+      const next = [...current];
+      form.setValue("allowedUomSymbols", next);
+      if ((form.getValues("baseUnitSymbol") || "").toUpperCase() === key) {
+        form.setValue("baseUnitSymbol", next[0] ?? "");
+      }
+      return;
+    }
+    current.add(key);
+    form.setValue("allowedUomSymbols", [...current]);
+  }
 
   const fields = businessKind === BUSINESS_KIND.trading
     ? TRADING_SPEC_FIELDS[productType || "other"]
@@ -392,6 +420,8 @@ export function ProductCreateForm({
           name: values.name.trim(),
           businessKind: values.businessKind,
           baseUnitSymbol: values.baseUnitSymbol,
+          allowedUomSymbols: (values.allowedUomSymbols ?? []).map((s) => s.toUpperCase()),
+          gstPercent: values.gstPercent === "5" ? "5" : "18",
           description: values.description.trim() || undefined,
           specs: Object.fromEntries(
             Object.entries(values.specs ?? {})
@@ -408,7 +438,7 @@ export function ProductCreateForm({
                     : value,
               ]),
           ),
-        }, { silent: true, successMessage: "Product created successfully." });
+        }, { silent: true, successMessage: productId ? "Product updated successfully." : "Product created successfully." });
         if (saved && typeof saved === "object" && "id" in saved && typeof saved.id === "string") {
           router.push(`/products/catalog/${saved.id}`);
         }
@@ -473,11 +503,57 @@ export function ProductCreateForm({
             ))}
           </fieldset>
         ) : null}
-        <Field label="Unit of Measurement" required>
+        <div className="md:col-span-2">
+          <Field label="Allowed UOMs (lead dropdown)" required>
+            <div className="flex flex-wrap gap-2">
+              {units.map((unit) => {
+                const checked = allowedUomSymbols.some((s) => s.toUpperCase() === unit.symbol.toUpperCase());
+                return (
+                  <label
+                    key={unit.symbol}
+                    className={`inline-flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm ${
+                      checked ? "border-info/40 bg-info/5" : "border-border"
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleAllowedUom(unit.symbol)}
+                    />
+                    <span className="font-medium">{unit.symbol}</span>
+                    <span className="text-muted">{unit.name}</span>
+                  </label>
+                );
+              })}
+            </div>
+            <p className="mt-1 text-xs text-muted">
+              Select every unit that should appear on lead creation (e.g. KG, FT, IN for coil).
+            </p>
+          </Field>
+        </div>
+        <Field label="Default UOM" required>
           <select className={controlClass} required {...form.register("baseUnitSymbol")}>
-            <option value="">Select a unit…</option>
-            {units.map((unit) => <option key={unit.symbol} value={unit.symbol}>{unit.symbol} — {unit.name}</option>)}
+            <option value="">Select default…</option>
+            {units
+              .filter((unit) =>
+                allowedUomSymbols.some((s) => s.toUpperCase() === unit.symbol.toUpperCase()),
+              )
+              .map((unit) => (
+                <option key={unit.symbol} value={unit.symbol}>
+                  {unit.symbol} — {unit.name}
+                </option>
+              ))}
           </select>
+          {!allowedUomSymbols.some((s) => s.toUpperCase() === (baseUnitSymbol || "").toUpperCase()) ? (
+            <p className="mt-1 text-xs text-danger">Default must be one of the allowed UOMs.</p>
+          ) : null}
+        </Field>
+        <Field label="GST" required>
+          <select className={controlClass} required {...form.register("gstPercent")}>
+            <option value="5">5%</option>
+            <option value="18">18%</option>
+          </select>
+          <p className="mt-1 text-xs text-muted">Applied on quotations for this product.</p>
         </Field>
         <div className="md:col-span-2"><Field label="Description / Additional Notes"><textarea className={controlClass} rows={3} {...form.register("description")} /></Field></div>
         <div className="md:col-span-2 space-y-3"><FormFeedback error={error} success={success} /><Button pending={pending}>{productId ? "Save changes" : "Create product"}</Button></div>

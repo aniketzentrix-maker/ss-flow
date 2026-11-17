@@ -150,6 +150,8 @@ model Plant {
   materialRequests MaterialRequest[]
   requisitions PurchaseRequisition[]
   productCategories ProductCategory[]
+  productCategoryUoms ProductCategoryUom[]
+  productUoms ProductUom[]
   designations Designation[]
   unitsOfMeasure UnitOfMeasure[]
   catalogProducts Product[]
@@ -180,6 +182,7 @@ model UnitOfMeasure {
   unitType  String   @map("unit_type")
   isActive  Boolean  @default(true) @map("is_active")
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
   plant     Plant    @relation(fields: [plantId], references: [id])
   products  Product[]
   variants  ProductVariant[]
@@ -188,6 +191,8 @@ model UnitOfMeasure {
   productionIssues ProductionMaterialIssue[]
   productionOutputs ProductionOutput[]
   leadItems         LeadItem[]
+  categoryUoms      ProductCategoryUom[]
+  productUoms       ProductUom[]
   @@unique([plantId, symbol])
   @@map("units_of_measure")
 }
@@ -201,6 +206,8 @@ model Product {
   productType     String           @map("product_type")
   supplyMode      String           @map("supply_mode")
   baseUnitId      String?          @map("base_unit_id") @db.Uuid
+  /** GST slab for quotations: 5 or 18. */
+  gstPercent      Decimal          @default(18) @map("gst_percent") @db.Decimal(5, 2)
   trackInventory  Boolean          @default(true) @map("track_inventory")
   description     String?
   isActive        Boolean          @default(true) @map("is_active")
@@ -212,12 +219,31 @@ model Product {
   variants        ProductVariant[]
   leadItems       LeadItem[]
   boms            BomHeader[]
+  allowedUoms     ProductUom[]
   gradeCompatibilities   ProductGradeCompatibility[]
   finishCompatibilities  ProductFinishCompatibility[]
   specOptions            SpecOptionMaster[]
   @@unique([plantId, sku])
   @@index([plantId, productType])
   @@map("products")
+}
+
+/** Allowed transaction UOMs for a catalog product (lead/order dropdown source). */
+model ProductUom {
+  id        String        @id @db.Uuid
+  plantId   String        @map("plant_id") @db.Uuid
+  productId String        @map("product_id") @db.Uuid
+  unitId    String        @map("unit_id") @db.Uuid
+  isDefault Boolean       @default(false) @map("is_default")
+  isActive  Boolean       @default(true) @map("is_active")
+  createdAt DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  plant     Plant         @relation(fields: [plantId], references: [id])
+  product   Product       @relation(fields: [productId], references: [id], onDelete: Cascade)
+  unit      UnitOfMeasure @relation(fields: [unitId], references: [id])
+  @@unique([plantId, productId, unitId])
+  @@index([plantId, productId, isActive])
+  @@map("product_uoms")
 }
 
 model ProductVariant {
@@ -392,10 +418,29 @@ model ProductCategory {
   products     MaterialMaster[]
   catalogProducts Product[]
   specOptions  SpecOptionMaster[]
+  categoryUoms ProductCategoryUom[]
   @@unique([plantId, code])
   @@index([plantId, categoryType])
   @@index([plantId, status])
   @@map("product_categories")
+}
+
+/** Allowed transaction UOMs for a product category (database-driven dropdown source). */
+model ProductCategoryUom {
+  id                String          @id @db.Uuid
+  plantId           String          @map("plant_id") @db.Uuid
+  productCategoryId String          @map("product_category_id") @db.Uuid
+  unitId            String          @map("unit_id") @db.Uuid
+  isDefault         Boolean         @default(false) @map("is_default")
+  isActive          Boolean         @default(true) @map("is_active")
+  createdAt         DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
+  plant             Plant           @relation(fields: [plantId], references: [id])
+  productCategory   ProductCategory @relation(fields: [productCategoryId], references: [id], onDelete: Cascade)
+  unit              UnitOfMeasure   @relation(fields: [unitId], references: [id])
+  @@unique([plantId, productCategoryId, unitId])
+  @@index([plantId, productCategoryId, isActive])
+  @@map("product_category_uoms")
 }
 
 model Supplier {
@@ -1667,6 +1712,8 @@ model QuotationItem {
   pricingBasis  String?         @map("pricing_basis")
   discountPct   Decimal?        @map("discount_pct") @db.Decimal(8, 3)
   amount        Decimal         @db.Decimal(18, 2)
+  /** Snapshot of product GST slab (5 or 18) at quotation time. */
+  gstPercent    Decimal         @default(18) @map("gst_percent") @db.Decimal(5, 2)
   expectedDeliveryDate DateTime? @map("expected_delivery_date") @db.Date
   quotation     Quotation       @relation(fields: [quotationId], references: [id], onDelete: Cascade)
   leadItem      LeadItem?       @relation(fields: [leadItemId], references: [id], onDelete: SetNull)
