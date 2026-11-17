@@ -13,7 +13,7 @@ const LEAD_STATUS_CUSTOMER_MESSAGES: Partial<Record<LeadStatus, string>> = {
   NEGOTIATION: "We are discussing commercial terms for your enquiry.",
   SAMPLE_APPROVAL: "We are awaiting your approval on the sample for this custom order.",
   CONVERTED: "Your enquiry has been converted to a sales order. Thank you for choosing SS Metals.",
-  ON_HOLD: "Your enquiry is on hold. We will update you when it moves forward.",
+  ON_HOLD: "Your enquiry is pending. We will update you when it moves forward.",
   LOST: "We could not proceed with this enquiry at this time. Contact us if you would like to discuss further.",
   REJECTED: "We are unable to fulfil this enquiry. Contact us if you have questions.",
 };
