@@ -746,8 +746,33 @@ export async function listLeadFormCustomers(plantIds: string[]) {
 export async function listSalesOrderProducts(plantIds: string[]) {
   const rows = await prisma.materialMaster.findMany({
     where: { plantId: { in: plantIds }, active: true, salesAllowed: true },
-    include: {
-      productVariant: { include: { product: { select: { id: true, name: true, sku: true } }, unit: { select: { symbol: true } } } },
+    select: {
+      id: true,
+      name: true,
+      code: true,
+      uom: true,
+      categoryId: true,
+      grade: true,
+      thickness: true,
+      width: true,
+      length: true,
+      diameter: true,
+      minOrderQty: true,
+      productVariant: {
+        select: {
+          id: true,
+          displayName: true,
+          grade: true,
+          finish: true,
+          thicknessMm: true,
+          widthMm: true,
+          lengthMm: true,
+          diameterMm: true,
+          attributes: true,
+          product: { select: { id: true, name: true, sku: true } },
+          unit: { select: { symbol: true } },
+        },
+      },
     },
     orderBy: { name: "asc" },
   });

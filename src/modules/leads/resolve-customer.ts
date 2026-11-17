@@ -18,7 +18,13 @@ function randomPortalPassword() {
 async function createPortalCustomerUser(
   tx: Tx,
   plantId: string,
-  input: { email: string; name: string; phone?: string | null; customerId: string },
+  input: {
+    email: string;
+    name: string;
+    phone?: string | null;
+    customerId: string;
+    passwordHash?: string;
+  },
 ) {
   const role = await tx.role.findUnique({ where: { code: "customer" } });
   if (!role) throw new AppError(500, "INTERNAL", "Customer role is not configured.");
@@ -30,7 +36,7 @@ async function createPortalCustomerUser(
       email: input.email,
       name: input.name.trim(),
       phone: input.phone?.trim() || null,
-      passwordHash: await hashPassword(randomPortalPassword()),
+      passwordHash: input.passwordHash ?? (await hashPassword(randomPortalPassword())),
       customerId: input.customerId,
     },
   });
@@ -52,6 +58,8 @@ export async function resolveOrCreateCustomerForLead(
     name: string;
     phone: string;
     email?: string | null;
+    /** Prefetch argon2 outside the DB transaction when creating a portal user. */
+    portalPasswordHash?: string;
   },
   auditUserId: string,
 ): Promise<string> {
@@ -100,6 +108,7 @@ export async function resolveOrCreateCustomerForLead(
       name: displayName,
       phone,
       customerId: customer.id,
+      passwordHash: input.portalPasswordHash,
     });
   }
 

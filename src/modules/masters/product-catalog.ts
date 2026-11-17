@@ -186,19 +186,14 @@ export async function createDeskProduct(session: SessionUser, input: CreateDeskP
       const productShape = "product";
       const specs = input.specs ?? {};
 
-      let unitId: string;
-      {
-        const symbol = input.baseUnitSymbol.trim().toUpperCase();
-        const unit = await tx.unitOfMeasure.findFirst({
-          where: { plantId, symbol, isActive: true },
-        });
-        if (!unit) {
-          throw new AppError(404, "NOT_FOUND", "Unit was not found for this factory.");
-        }
-        unitId = unit.id;
+      const symbol = input.baseUnitSymbol.trim().toUpperCase();
+      const unitRow = await tx.unitOfMeasure.findFirst({
+        where: { plantId, symbol, isActive: true },
+      });
+      if (!unitRow) {
+        throw new AppError(404, "NOT_FOUND", "Unit was not found for this factory.");
       }
-
-      const unitRow = await tx.unitOfMeasure.findFirstOrThrow({ where: { id: unitId } });
+      const unitId = unitRow.id;
       const legacyCategory = legacyCategoryFromProductType(productType);
       const productId = uuidv7();
       const materialId = uuidv7();
@@ -427,13 +422,32 @@ export async function updateDeskProduct(
           sku: { equals: existing.sku, mode: "insensitive" },
           isActive: true,
         },
-        include: { variants: { include: { materialMaster: true } }, baseUnit: true },
+        include: {
+          variants: {
+            select: {
+              id: true,
+              sku: true,
+              materialMasterId: true,
+            },
+          },
+          baseUnit: { select: { id: true, symbol: true } },
+        },
       });
+      const siblingPlantIds = [...new Set(siblings.map((sibling) => sibling.plantId))];
+      const siblingUnits = siblingPlantIds.length
+        ? await tx.unitOfMeasure.findMany({
+            where: {
+              plantId: { in: siblingPlantIds },
+              symbol: unit.symbol,
+              isActive: true,
+            },
+            select: { id: true, symbol: true, plantId: true },
+          })
+        : [];
+      const siblingUnitByPlant = new Map(siblingUnits.map((row) => [row.plantId, row]));
+
       for (const sibling of siblings) {
-        const siblingUnit =
-          (await tx.unitOfMeasure.findFirst({
-            where: { plantId: sibling.plantId, symbol: unit.symbol, isActive: true },
-          })) ?? sibling.baseUnit;
+        const siblingUnit = siblingUnitByPlant.get(sibling.plantId) ?? sibling.baseUnit;
         await tx.product.update({
           where: { id: sibling.id },
           data: {
@@ -720,23 +734,27 @@ async function withAllowedUoms<T extends { id: string; plantId: string }>(produc
  * then to the exact id (read-only fallback for plant.manage catalog).
  */
 export async function getCatalogProduct(id: string, plantIds: string[]) {
-  const scoped = await prisma.product.findFirst({
-    where: { id, plantId: { in: plantIds } },
-    include: catalogProductInclude,
-  });
+  // Prefer the caller's plant row; fall back to exact id (may later twin-resolve by SKU).
+  const [scoped, exact] = await Promise.all([
+    plantIds.length
+      ? prisma.product.findFirst({
+          where: { id, plantId: { in: plantIds } },
+          include: catalogProductInclude,
+        })
+      : Promise.resolve(null),
+    prisma.product.findFirst({
+      where: { id },
+      include: catalogProductInclude,
+    }),
+  ]);
   if (scoped) return withAllowedUoms(scoped);
-
-  const any = await prisma.product.findFirst({
-    where: { id },
-    select: { id: true, sku: true, isActive: true },
-  });
-  if (!any) return null;
+  if (!exact) return null;
 
   if (plantIds.length) {
     const twin = await prisma.product.findFirst({
       where: {
         plantId: { in: plantIds },
-        sku: { equals: any.sku, mode: "insensitive" },
+        sku: { equals: exact.sku, mode: "insensitive" },
         isActive: true,
       },
       include: catalogProductInclude,
@@ -746,11 +764,7 @@ export async function getCatalogProduct(id: string, plantIds: string[]) {
   }
 
   // Universal catalog: still open the requested row so edit/detail are not 404.
-  const fallback = await prisma.product.findFirst({
-    where: { id },
-    include: catalogProductInclude,
-  });
-  return fallback ? withAllowedUoms(fallback) : null;
+  return withAllowedUoms(exact);
 }
 
 export async function listVariantsForProduct(productId: string, plantIds: string[]) {

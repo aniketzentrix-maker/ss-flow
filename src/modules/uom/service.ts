@@ -42,17 +42,20 @@ export async function getActiveUoms(plantId: string, db: Db = prisma): Promise<U
 
 async function categoryChainIds(db: Db, plantId: string, categoryId: string | null | undefined) {
   if (!categoryId) return [] as string[];
+  // One plant-scoped read, then walk parents in memory (avoids N round-trips per depth).
+  const categories = await db.productCategory.findMany({
+    where: { plantId },
+    select: { id: true, parentId: true },
+  });
+  const parentById = new Map(categories.map((row) => [row.id, row.parentId]));
   const ids: string[] = [];
   let currentId: string | null = categoryId;
   const seen = new Set<string>();
   while (currentId && !seen.has(currentId)) {
     seen.add(currentId);
     ids.push(currentId);
-    const row: { parentId: string | null } | null = await db.productCategory.findFirst({
-      where: { id: currentId, plantId },
-      select: { parentId: true },
-    });
-    currentId = row?.parentId ?? null;
+    if (!parentById.has(currentId)) break;
+    currentId = parentById.get(currentId) ?? null;
   }
   return ids;
 }
@@ -209,13 +212,18 @@ export async function validateProductUom(
     );
   }
 
-  const unit = await db.unitOfMeasure.findFirst({
-    where: { id: match.id, plantId, isActive: true },
-  });
-  if (!unit) {
-    throw new AppError(400, "VALIDATION", "Selected UOM is inactive or not in this plant.");
-  }
-  return { unit, option: match, allowed };
+  // Allowed options already come from active plant UOMs; avoid a redundant round-trip.
+  return {
+    unit: {
+      id: match.id,
+      name: match.name,
+      symbol: match.symbol,
+      unitType: match.unitType,
+      isActive: true,
+    },
+    option: match,
+    allowed,
+  };
 }
 
 export async function listCategoryUomMappings(

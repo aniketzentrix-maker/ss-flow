@@ -102,35 +102,41 @@ async function loadLeadForQuote(tx: Tx, leadId: string, plantIds: string[]) {
 
 async function syncLeadItemPricesFromLines(tx: Tx, lines: QuotationLineWrite[] | undefined) {
   if (!lines?.length) return;
-  for (const line of lines) {
-    if (!line.leadItemId) continue;
+  const updates = lines.flatMap((line) => {
+    if (!line.leadItemId) return [];
     const market = line.listRate?.trim();
     const offer = line.rate?.trim();
-    if (!market && !offer) continue;
-    await tx.leadItem.update({
-      where: { id: line.leadItemId },
-      data: {
-        ...(market ? { marketPrice: new Decimal(market) } : {}),
-        ...(offer ? { priceOffered: new Decimal(offer) } : {}),
-      },
-    });
-  }
+    if (!market && !offer) return [];
+    return [
+      tx.leadItem.update({
+        where: { id: line.leadItemId },
+        data: {
+          ...(market ? { marketPrice: new Decimal(market) } : {}),
+          ...(offer ? { priceOffered: new Decimal(offer) } : {}),
+        },
+      }),
+    ];
+  });
+  if (updates.length) await Promise.all(updates);
 }
 
 async function syncLeadItemPricesFromQuotationItems(
   tx: Tx,
   items: { leadItemId: string | null; listRate: Decimal | null; rate: Decimal }[],
 ) {
-  for (const item of items) {
-    if (!item.leadItemId) continue;
-    await tx.leadItem.update({
-      where: { id: item.leadItemId },
-      data: {
-        marketPrice: item.listRate,
-        priceOffered: item.rate,
-      },
-    });
-  }
+  const updates = items.flatMap((item) => {
+    if (!item.leadItemId) return [];
+    return [
+      tx.leadItem.update({
+        where: { id: item.leadItemId },
+        data: {
+          marketPrice: item.listRate,
+          priceOffered: item.rate,
+        },
+      }),
+    ];
+  });
+  if (updates.length) await Promise.all(updates);
 }
 
 function linesFromLeadItems(
@@ -203,6 +209,34 @@ async function buildItemRows(tx: Tx, plantId: string, lines: QuotationLineWrite[
     expectedDeliveryDate: Date | null;
   }[] = [];
 
+  const leadItemIds = [...new Set(lines.map((line) => line.leadItemId).filter((id): id is string => Boolean(id)))];
+  const leadItems = leadItemIds.length
+    ? await tx.leadItem.findMany({
+        where: { id: { in: leadItemIds } },
+        include: {
+          product: { select: { name: true, code: true, grade: true, taxRate: true } },
+          parentProduct: { select: { name: true, sku: true, gstPercent: true } },
+          productVariant: { select: { displayName: true, sku: true } },
+        },
+      })
+    : [];
+  const leadItemById = new Map(leadItems.map((row) => [row.id, row]));
+
+  const provisionalProductIds = [
+    ...new Set(
+      lines
+        .map((line) => line.productId ?? (line.leadItemId ? leadItemById.get(line.leadItemId)?.productId : null) ?? null)
+        .filter((id): id is string => Boolean(id)),
+    ),
+  ];
+  const materials = provisionalProductIds.length
+    ? await tx.materialMaster.findMany({
+        where: { id: { in: provisionalProductIds }, plantId, active: true, salesAllowed: true },
+        select: { id: true, taxRate: true },
+      })
+    : [];
+  const materialById = new Map(materials.map((row) => [row.id, row]));
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     let productId = line.productId ?? null;
@@ -213,14 +247,7 @@ async function buildItemRows(tx: Tx, plantId: string, lines: QuotationLineWrite[
     let gstPercent = line.gstPercent ? normalizeProductGst(line.gstPercent) : null;
 
     if (line.leadItemId) {
-      const leadItem = await tx.leadItem.findFirst({
-        where: { id: line.leadItemId },
-        include: {
-          product: { select: { name: true, code: true, grade: true, taxRate: true } },
-          parentProduct: { select: { name: true, sku: true, gstPercent: true } },
-          productVariant: { select: { displayName: true, sku: true } },
-        },
-      });
+      const leadItem = leadItemById.get(line.leadItemId);
       if (!productId) productId = leadItem?.productId ?? null;
       if (leadItem) {
         const lineSource = {
@@ -253,9 +280,7 @@ async function buildItemRows(tx: Tx, plantId: string, lines: QuotationLineWrite[
     }
 
     if (productId) {
-      const product = await tx.materialMaster.findFirst({
-        where: { id: productId, plantId, active: true, salesAllowed: true },
-      });
+      const product = materialById.get(productId);
       if (!product) throw new AppError(400, "VALIDATION", "Each line must reference an active sales product.");
       if (!gstPercent && product.taxRate != null) {
         gstPercent = normalizeProductGst(product.taxRate.toString());
@@ -336,9 +361,16 @@ async function syncLeadAfterQuoteSend(
     : "QUOTATION_SENT";
 
   if (target && lead.status !== target && canTransitionLead(lead.status, target, { orderType: lead.orderType })) {
+    // recordLeadStatus updates lead status + lastActivityAt once; activity skips a second lead write.
     await recordLeadStatus(tx, lead.id, userId, lead.status, target, `Quotation ${quotationNumber} v${version} sent`);
-  } else if (target === "QUOTATION_SENT" && lead.status === "QUOTATION_SENT") {
-    // already on stage — activity only
+    await addLeadActivity(tx, {
+      leadId: lead.id,
+      userId,
+      activityType: "quotation",
+      description: `Quotation ${quotationNumber} (v${version}) marked sent; a copy was saved on this lead.`,
+      skipLeadUpdate: true,
+    });
+    return;
   }
 
   await addLeadActivity(tx, {

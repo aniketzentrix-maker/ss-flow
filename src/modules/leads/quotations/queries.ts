@@ -75,10 +75,25 @@ export async function listLeadQuotations(leadId: string, plantIds: string[]) {
   return prisma.quotation.findMany({
     where: { leadId, plantId: { in: plantIds } },
     orderBy: [{ groupId: "desc" }, { version: "desc" }],
-    include: {
+    select: {
+      id: true,
+      leadId: true,
+      quotationNumber: true,
+      version: true,
+      groupId: true,
+      parentQuotationId: true,
+      status: true,
+      validUntil: true,
+      subtotal: true,
+      total: true,
+      approvalRequired: true,
+      approvedAt: true,
+      sentAt: true,
+      sentVia: true,
+      createdAt: true,
       createdBy: { select: { id: true, name: true } },
       approvedBy: { select: { id: true, name: true } },
-      items: { orderBy: { sortOrder: "asc" }, include: { product: { select: { id: true, name: true, code: true } } } },
+      _count: { select: { items: true } },
     },
   });
 }
@@ -110,9 +125,10 @@ export function serializeQuotationSummary(
     createdBy: row.createdBy,
     sentAt: row.sentAt?.toISOString() ?? null,
     sentVia: row.sentVia,
-    hasSentCopy: "sentDocumentHtml" in row && Boolean((row as { sentDocumentHtml?: string | null }).sentDocumentHtml),
+    // Sent quotations always archive HTML on send; avoid loading the HTML blob in list views.
+    hasSentCopy: Boolean(row.sentAt),
     createdAt: row.createdAt.toISOString(),
-    itemCount: row.items.length,
+    itemCount: row._count.items,
   };
 }
 

@@ -30,7 +30,7 @@ import {
   thicknessDisplayParts,
 } from "@/lib/domain/dimension-units";
 import { listSentQuotationsForLead } from "@/modules/leads/quotations/queries";
-import { materialAvailableQty } from "@/modules/leads/stock-check";
+import { materialAvailableQtyMap } from "@/modules/leads/stock-check";
 import { leadOrderTypeLabel } from "@/modules/leads/order-type";
 import { lostReasonLabel } from "@/modules/leads/lost-reason";
 import { leadCanConvert, leadCanVerify, leadPriorityLabel, leadSourceLabel } from "@/modules/leads/status";
@@ -251,13 +251,6 @@ export default async function LeadDetailPage({
   const { id } = await params;
   const lead = await leadDetail(id, plantIds);
   if (!lead) notFound();
-  const duplicateMatches = await leadDuplicateMatches(lead.plantId, {
-    id: lead.id,
-    phone: lead.phone,
-    email: lead.email,
-    gstin: lead.gstin,
-  });
-  const sentQuotations = await listSentQuotationsForLead(lead.id, plantIds);
 
   const canConvert =
     session.permissions.has("lead.convert") &&
@@ -276,19 +269,27 @@ export default async function LeadDetailPage({
     ) &&
     (session.permissions.has("lead.manage") || session.permissions.has("lead.convert"));
   const needsSalesProducts = canConvert || showFulfillmentPreview;
-  const [salesProducts, categories] = await Promise.all([
+
+  const [duplicateMatches, sentQuotations, salesProducts, categories] = await Promise.all([
+    leadDuplicateMatches(lead.plantId, {
+      id: lead.id,
+      phone: lead.phone,
+      email: lead.email,
+      gstin: lead.gstin,
+    }),
+    listSentQuotationsForLead(lead.id, plantIds),
     needsSalesProducts ? listSalesOrderProducts(plantIds) : Promise.resolve([]),
     listCategories(plantIds),
   ]);
+
   const productStock: Record<string, number> = {};
-  if (needsSalesProducts) {
-    const stockEntries = await Promise.all(
-      salesProducts.map(async (product) => [
-        product.id,
-        await materialAvailableQty(prisma, lead.plantId, product.id),
-      ] as const),
+  if (needsSalesProducts && salesProducts.length) {
+    const stockByProduct = await materialAvailableQtyMap(
+      prisma,
+      lead.plantId,
+      salesProducts.map((product) => product.id),
     );
-    for (const [productId, qty] of stockEntries) productStock[productId] = qty;
+    for (const [productId, qty] of stockByProduct) productStock[productId] = qty;
   }
   const categoryNames = new Map(
     categories.map((category) => [category.id, category.name]),

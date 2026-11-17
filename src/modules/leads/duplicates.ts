@@ -33,6 +33,15 @@ export function isValidGstin(raw: string | null | undefined) {
   return value.length === 15 && GSTIN_RE.test(value);
 }
 
+function phoneLookupVariants(phoneNormalized: string) {
+  return [
+    phoneNormalized,
+    `+91${phoneNormalized}`,
+    `91${phoneNormalized}`,
+    `0${phoneNormalized}`,
+  ];
+}
+
 export async function findDuplicateMatches(
   db: Db,
   plantId: string,
@@ -79,6 +88,7 @@ export async function findDuplicateMatches(
     take: 20,
   });
 
+  // Legacy rows without phoneNormalized: targeted phone match instead of scanning 200 open leads.
   const legacyLeads =
     phoneNormalized && openLeads.length < 20
       ? await db.lead.findMany({
@@ -88,6 +98,10 @@ export async function findDuplicateMatches(
             phoneNormalized: null,
             status: { notIn: ["CONVERTED", "LOST", "REJECTED"] },
             ...(input.excludeLeadId ? { id: { not: input.excludeLeadId } } : {}),
+            OR: [
+              { phone: { in: phoneLookupVariants(phoneNormalized) } },
+              { phone: { endsWith: phoneNormalized } },
+            ],
           },
           select: {
             id: true,
@@ -100,7 +114,7 @@ export async function findDuplicateMatches(
             gstin: true,
             phoneNormalized: true,
           },
-          take: 200,
+          take: 20,
         })
       : [];
 
@@ -130,9 +144,15 @@ export async function findDuplicateMatches(
 
   if (phoneNormalized) {
     const customers = await db.customer.findMany({
-      where: { plantId, phone: { not: null } },
+      where: {
+        plantId,
+        OR: [
+          { phone: { in: phoneLookupVariants(phoneNormalized) } },
+          { phone: { endsWith: phoneNormalized } },
+        ],
+      },
       select: { id: true, code: true, name: true, phone: true },
-      take: 200,
+      take: 20,
     });
     for (const customer of customers) {
       if (normalizePhone(customer.phone) !== phoneNormalized) continue;

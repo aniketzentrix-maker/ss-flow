@@ -11,6 +11,7 @@ export async function recordLeadStatus(
   oldStatus: string | null,
   newStatus: LeadStatus,
   reason?: string,
+  opts?: { skipLeadUpdate?: boolean },
 ) {
   await tx.leadStatusHistory.create({
     data: {
@@ -22,6 +23,7 @@ export async function recordLeadStatus(
       reason: reason ?? null,
     },
   });
+  if (opts?.skipLeadUpdate) return;
   await tx.lead.update({
     where: { id: leadId },
     data: { status: newStatus, lastActivityAt: new Date() },
@@ -36,6 +38,7 @@ export async function addLeadActivity(
     activityType: string;
     description: string;
     nextFollowUpAt?: Date | null;
+    skipLeadUpdate?: boolean;
   },
 ) {
   await tx.leadActivity.create({
@@ -48,6 +51,7 @@ export async function addLeadActivity(
       nextFollowUpAt: input.nextFollowUpAt ?? null,
     },
   });
+  if (input.skipLeadUpdate) return;
   await tx.lead.update({
     where: { id: input.leadId },
     data: {

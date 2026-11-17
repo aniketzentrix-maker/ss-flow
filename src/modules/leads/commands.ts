@@ -41,9 +41,19 @@ import {
 import { normalizeLeadOrderType } from "@/modules/leads/order-type";
 import { resolveOrCreateCustomerForLead } from "@/modules/leads/resolve-customer";
 import { normalizeLeadPriority } from "@/modules/leads/status";
+import { hashPassword } from "@/lib/auth/password";
 import { validateProductUom } from "@/modules/uom/service";
 
 type Tx = Prisma.TransactionClient;
+
+function randomPortalPassword() {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*";
+  let password = "";
+  for (let i = 0; i < 16; i++) {
+    password += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return password;
+}
 
 async function leadForSession(tx: Tx, leadId: string, session: SessionUser) {
   const plantIds = await plantIdsForSession(session);
@@ -140,29 +150,80 @@ async function notifyAssignee(tx: Tx, plantId: string, assigneeId: string | null
   });
 }
 
-async function createLeadItems(tx: Tx, leadId: string, items: LeadItemInput[]) {
-  const lead = await tx.lead.findUniqueOrThrow({ where: { id: leadId }, select: { plantId: true } });
+const variantSelectForLead = {
+  id: true,
+  productId: true,
+  materialMasterId: true,
+  displayName: true,
+  attributes: true,
+  grade: true,
+  finish: true,
+  thicknessMm: true,
+  widthMm: true,
+  lengthMm: true,
+  diameterMm: true,
+  product: {
+    select: {
+      categoryId: true,
+      sku: true,
+      name: true,
+      category: { select: { code: true } },
+    },
+  },
+} as const;
+
+async function createLeadItems(tx: Tx, leadId: string, plantId: string, items: LeadItemInput[]) {
+  const variantIds = [...new Set(items.map((line) => line.productVariantId).filter((id): id is string => Boolean(id)))];
+  const parentIds = [...new Set(items.map((line) => line.parentProductId).filter((id): id is string => Boolean(id)))];
+
+  const [variants, parents] = await Promise.all([
+    variantIds.length
+      ? tx.productVariant.findMany({
+          where: {
+            id: { in: variantIds },
+            plantId,
+            isActive: true,
+            product: { isActive: true },
+          },
+          select: variantSelectForLead,
+        })
+      : Promise.resolve([]),
+    parentIds.length
+      ? tx.product.findMany({
+          where: { id: { in: parentIds } },
+          select: { id: true, sku: true, name: true },
+        })
+      : Promise.resolve([]),
+  ]);
+
+  const variantById = new Map(variants.map((row) => [row.id, row]));
+  const parentById = new Map(parents.map((row) => [row.id, row]));
+  const uomCache = new Map<string, { unitId: string; uom: string }>();
+
   for (const line of items) {
     if (!line.productId && !line.itemDescription?.trim() && !line.thickness && !line.grade && !line.size) {
       throw new AppError(400, "VALIDATION", "Each line needs a product, description, or specification.");
     }
     let parentProductId = line.parentProductId;
     if (parentProductId) {
-      const parentProduct = await tx.product.findUnique({
-        where: { id: parentProductId },
-        select: { sku: true, name: true },
-      });
-      if (isProductComingSoon(parentProduct)) {
+      const parentProduct = parentById.get(parentProductId);
+      if (!parentProduct) {
+        const fetched = await tx.product.findUnique({
+          where: { id: parentProductId },
+          select: { id: true, sku: true, name: true },
+        });
+        if (fetched) parentById.set(fetched.id, fetched);
+      }
+      if (isProductComingSoon(parentById.get(parentProductId) ?? null)) {
         throw new AppError(400, "VALIDATION", "Semi Finish Utensils is coming soon and cannot be requested yet.");
       }
     }
     if (line.productVariantId) {
-      const variant = await tx.productVariant.findFirst({
-        where: { id: line.productVariantId, plantId: lead.plantId, isActive: true, product: { isActive: true } },
-        select: { id: true, productId: true, materialMasterId: true, displayName: true, attributes: true, grade: true, finish: true, thicknessMm: true, widthMm: true, lengthMm: true, diameterMm: true, product: { select: { categoryId: true, sku: true, name: true, category: { select: { code: true } } } } },
-      });
+      const variant = variantById.get(line.productVariantId);
+      if (!variant) {
+        throw new AppError(400, "VALIDATION", "Choose an active variant that belongs to the selected parent product.");
+      }
       if (
-        !variant ||
         !line.productId ||
         line.productId !== (variant.materialMasterId ?? variant.id) ||
         (parentProductId && parentProductId !== variant.productId)
@@ -209,14 +270,22 @@ async function createLeadItems(tx: Tx, leadId: string, items: LeadItemInput[]) {
     let unitId = line.unitId ?? null;
     let uom = line.uom?.trim() || "PCS";
     if (parentProductId) {
-      const validated = await validateProductUom(
-        parentProductId,
-        lead.plantId,
-        { unitId, uomSymbol: uom },
-        tx,
-      );
-      unitId = validated.unit.id;
-      uom = validated.unit.symbol;
+      const cacheKey = `${parentProductId}:${unitId ?? ""}:${uom.toUpperCase()}`;
+      const cached = uomCache.get(cacheKey);
+      if (cached) {
+        unitId = cached.unitId;
+        uom = cached.uom;
+      } else {
+        const validated = await validateProductUom(
+          parentProductId,
+          plantId,
+          { unitId, uomSymbol: uom },
+          tx,
+        );
+        unitId = validated.unit.id;
+        uom = validated.unit.symbol;
+        uomCache.set(cacheKey, { unitId, uom });
+      }
     }
     const createdItem = await tx.leadItem.create({
       data: {
@@ -252,7 +321,7 @@ async function createLeadItems(tx: Tx, leadId: string, items: LeadItemInput[]) {
     const designFileIds = extractDesignFileIds(line.specifications as Record<string, unknown> | undefined);
     if (designFileIds.length > 0) {
       await tx.leadDesignFile.updateMany({
-        where: { id: { in: designFileIds }, plantId: lead.plantId },
+        where: { id: { in: designFileIds }, plantId },
         data: { leadItemId: createdItem.id },
       });
     }
@@ -292,6 +361,11 @@ export async function createLeadManual(
 ) {
   allow(session, "lead.manage");
   const plantId = primaryPlant(session);
+  // Hash outside the command transaction — argon2 must not hold a DB connection open.
+  const needsPortalUser = !input.customerId && Boolean(input.email?.trim());
+  const portalPasswordHash = needsPortalUser
+    ? await hashPassword(randomPortalPassword())
+    : undefined;
   return runCommand({
     userId: session.userId,
     route: "lead.create",
@@ -333,6 +407,7 @@ export async function createLeadManual(
           name: input.companyName?.trim() || customerName,
           phone: input.phone,
           email: input.email,
+          portalPasswordHash,
         },
         session.userId,
       );
@@ -394,14 +469,18 @@ export async function createLeadManual(
           lastActivityAt: new Date(),
         },
       });
-      await createLeadItems(tx, id, input.items);
-      await recordLeadStatus(tx, id, session.userId, null, "NEW", "Lead created");
+      await createLeadItems(tx, id, plantId, input.items);
+      // Lead row already has status/lastActivityAt/nextFollowUpAt from create.
+      await recordLeadStatus(tx, id, session.userId, null, "NEW", "Lead created", {
+        skipLeadUpdate: true,
+      });
       await addLeadActivity(tx, {
         leadId: id,
         userId: session.userId,
         activityType: "created",
         description: `Lead created (${input.source}).`,
         nextFollowUpAt: input.nextFollowUpAt ? new Date(input.nextFollowUpAt) : null,
+        skipLeadUpdate: true,
       });
       await notifyAssignee(tx, plantId, input.assigneeId ?? null, id, leadNumber);
       await audit(tx, { userId: session.userId, action: "lead.create", resource: "lead", resourceId: id });
@@ -529,18 +608,27 @@ export async function changeLeadStatus(
       const historyReason = lostCode
         ? formatLostReasonLegacyColumn(lostCode, lostNote)
         : input.reason?.trim();
-      await recordLeadStatus(tx, leadId, session.userId, lead.status, input.status, historyReason);
+      await recordLeadStatus(tx, leadId, session.userId, lead.status, input.status, historyReason, {
+        skipLeadUpdate: true,
+      });
       await addLeadActivity(tx, {
         leadId,
         userId: session.userId,
         activityType: "status",
         description: `Status → ${input.status}${historyReason ? `: ${historyReason}` : ""}`,
+        skipLeadUpdate: true,
       });
-      const updated = await tx.lead.findUnique({
-        where: { id: leadId },
-        select: { id: true, plantId: true, leadNumber: true, customerName: true, email: true },
-      });
-      return { id: leadId, status: input.status, emailLead: updated };
+      return {
+        id: leadId,
+        status: input.status,
+        emailLead: {
+          id: lead.id,
+          plantId: lead.plantId,
+          leadNumber: lead.leadNumber,
+          customerName: lead.customerName,
+          email: lead.email,
+        },
+      };
     },
   }).then(async (result) => {
     if (result.emailLead?.email) {
@@ -663,18 +751,33 @@ export async function verifyLead(
       if (metadata.count !== 1) {
         throw new AppError(409, "INVALID_STATE", "The lead changed while you were verifying it. Refresh and try again.");
       }
-      await recordLeadStatus(tx, leadId, session.userId, lead.status, "VERIFIED", "Verification checks completed");
+      await recordLeadStatus(
+        tx,
+        leadId,
+        session.userId,
+        lead.status,
+        "VERIFIED",
+        "Verification checks completed",
+        { skipLeadUpdate: true },
+      );
       await addLeadActivity(tx, {
         leadId,
         userId: session.userId,
         activityType: "verification",
         description: input.verificationNotes?.trim() || "Customer, requested items, quantity, and requirement confirmed.",
+        skipLeadUpdate: true,
       });
-      const updated = await tx.lead.findUnique({
-        where: { id: leadId },
-        select: { id: true, plantId: true, leadNumber: true, customerName: true, email: true },
-      });
-      return { id: leadId, status: "VERIFIED" as const, emailLead: updated };
+      return {
+        id: leadId,
+        status: "VERIFIED" as const,
+        emailLead: {
+          id: lead.id,
+          plantId: lead.plantId,
+          leadNumber: lead.leadNumber,
+          customerName: lead.customerName,
+          email: lead.email,
+        },
+      };
     },
   }).then(async (result) => {
     if (result.emailLead?.email) {
@@ -713,7 +816,24 @@ export async function convertLeadToSalesOrder(
       const plantIds = await plantIdsForSession(session);
       const lead = await tx.lead.findFirst({
         where: { id: leadId, plantId: { in: plantIds }, deletedAt: null },
-        include: { items: { include: { product: true } }, customer: true, salesOrder: true },
+        include: {
+          items: {
+            include: {
+              product: {
+                select: {
+                  id: true,
+                  name: true,
+                  code: true,
+                  taxRate: true,
+                  salesUom: true,
+                  uom: true,
+                },
+              },
+            },
+          },
+          customer: { select: { id: true, name: true, phone: true, repeatOrderFollowUpDays: true } },
+          salesOrder: { select: { id: true, number: true } },
+        },
       });
       if (!lead) throw new AppError(404, "NOT_FOUND", "Lead not found.");
       const plantId = lead.plantId;
@@ -787,25 +907,57 @@ export async function convertLeadToSalesOrder(
           ]),
       );
 
-      const orderLines = await Promise.all(lead.items.map(async (item) => {
+      const resolvedProductIds = [
+        ...new Set(
+          lead.items
+            .map((item) => {
+              const selection = input.lines.find((line) => line.leadItemId === item.id);
+              const quoted = quotationItemsByLeadItem.get(item.id);
+              return selection?.productId ?? quoted?.productId ?? item.productId ?? null;
+            })
+            .filter((id): id is string => Boolean(id)),
+        ),
+      ];
+      const products = resolvedProductIds.length
+        ? await tx.materialMaster.findMany({
+            where: {
+              id: { in: resolvedProductIds },
+              plantId,
+              active: true,
+              salesAllowed: true,
+            },
+            select: {
+              id: true,
+              taxRate: true,
+              salesUom: true,
+              uom: true,
+            },
+          })
+        : [];
+      const productById = new Map(products.map((row) => [row.id, row]));
+
+      const orderLines = [];
+      for (const item of lead.items) {
         const selection = input.lines.find((line) => line.leadItemId === item.id);
         const quoted = quotationItemsByLeadItem.get(item.id);
         const productId = selection?.productId ?? quoted?.productId ?? item.productId;
         if (!productId) throw new AppError(400, "VALIDATION", `Select a sales product for ${item.itemDescription || "each requested item"}.`);
-        const product = await tx.materialMaster.findFirst({ where: { id: productId, plantId, active: true, salesAllowed: true } });
+        const product = productById.get(productId);
         if (!product) throw new AppError(400, "VALIDATION", "Select an active sales product for every requested item.");
         const specifications = item.specifications && typeof item.specifications === "object" && !Array.isArray(item.specifications)
           ? item.specifications as Record<string, unknown>
           : {};
         const inStock = selection?.inStock ?? item.inStock ?? null;
         const leadTimeDays = selection?.estimatedLeadTimeDays ?? item.estimatedLeadTimeDays ?? null;
-        await tx.leadItem.update({
-          where: { id: item.id },
-          data: {
-            ...(inStock != null ? { inStock } : {}),
-            ...(leadTimeDays != null ? { estimatedLeadTimeDays: leadTimeDays } : {}),
-          },
-        });
+        if (inStock != null || leadTimeDays != null) {
+          await tx.leadItem.update({
+            where: { id: item.id },
+            data: {
+              ...(inStock != null ? { inStock } : {}),
+              ...(leadTimeDays != null ? { estimatedLeadTimeDays: leadTimeDays } : {}),
+            },
+          });
+        }
         const quotedRate = quoted?.rate;
         if (!quotedRate) {
           throw new AppError(
@@ -821,7 +973,7 @@ export async function convertLeadToSalesOrder(
             "Unit price must match the approved quotation; change the quote instead.",
           );
         }
-        return {
+        orderLines.push({
           productId: product.id,
           qtyOrdered: item.quantity.toString(),
           unitPrice: quotedRate,
@@ -844,8 +996,8 @@ export async function convertLeadToSalesOrder(
             parentProductId: item.parentProductId,
             productVariantId: item.productVariantId,
           },
-        };
-      }));
+        });
+      }
 
       const orderId = uuidv7();
       const claimed = await tx.lead.updateMany({
@@ -934,12 +1086,21 @@ export async function convertLeadToSalesOrder(
         await markQuotationAccepted(tx, acceptedQuotationId, session.userId);
       }
 
-      await recordLeadStatus(tx, leadId, session.userId, lead.status, "CONVERTED", `Sales order ${number}`);
+      await recordLeadStatus(
+        tx,
+        leadId,
+        session.userId,
+        lead.status,
+        "CONVERTED",
+        `Sales order ${number}`,
+        { skipLeadUpdate: true },
+      );
       await addLeadActivity(tx, {
         leadId,
         userId: session.userId,
         activityType: "conversion",
         description: `Converted to sales order ${number}.`,
+        skipLeadUpdate: true,
       });
 
       const repeatDays = resolveRepeatOrderFollowUpDays({
@@ -952,6 +1113,8 @@ export async function convertLeadToSalesOrder(
         data: {
           repeatOrderFollowUpDays: repeatDays,
           repeatOrderFollowUpAt: repeatAt,
+          lastActivityAt: new Date(),
+          nextFollowUpAt: repeatAt,
         },
       });
       await addLeadActivity(tx, {
@@ -960,6 +1123,7 @@ export async function convertLeadToSalesOrder(
         activityType: "repeat_order_follow_up",
         description: `Repeat order follow-up scheduled in ${repeatDays} days.`,
         nextFollowUpAt: repeatAt,
+        skipLeadUpdate: true,
       });
 
       await audit(tx, {
@@ -1042,53 +1206,57 @@ export async function updateLeadDeliveryDates(
       const lead = await leadForSession(tx, leadId, session);
       const changes: string[] = [];
 
+      const existingItems = await tx.leadItem.findMany({
+        where: { leadId },
+        select: { id: true, requiredDeliveryDate: true, promisedDeliveryDate: true },
+      });
       if (input.items?.length) {
-        const existingItems = await tx.leadItem.findMany({
-          where: { leadId },
-          select: { id: true },
-        });
         const allowed = new Set(existingItems.map((row) => row.id));
-        for (const line of input.items) {
-          if (!allowed.has(line.id)) {
-            throw new AppError(400, "VALIDATION", "One or more lead items do not belong to this lead.");
-          }
-          const requiredDeliveryDate =
-            line.requiredDeliveryDate === undefined
-              ? undefined
-              : line.requiredDeliveryDate
-                ? new Date(line.requiredDeliveryDate)
-                : null;
-          const promisedDeliveryDate =
-            line.promisedDeliveryDate === undefined
-              ? undefined
-              : line.promisedDeliveryDate
-                ? new Date(line.promisedDeliveryDate)
-                : null;
-          await tx.leadItem.update({
-            where: { id: line.id },
-            data: {
-              ...(requiredDeliveryDate !== undefined
-                ? {
-                    requiredDeliveryDate,
-                    expectedDeliveryDate: requiredDeliveryDate,
-                  }
-                : {}),
-              ...(promisedDeliveryDate !== undefined ? { promisedDeliveryDate } : {}),
-            },
-          });
-        }
+        const byId = new Map(existingItems.map((row) => [row.id, row]));
+        await Promise.all(
+          input.items.map(async (line) => {
+            if (!allowed.has(line.id)) {
+              throw new AppError(400, "VALIDATION", "One or more lead items do not belong to this lead.");
+            }
+            const requiredDeliveryDate =
+              line.requiredDeliveryDate === undefined
+                ? undefined
+                : line.requiredDeliveryDate
+                  ? new Date(line.requiredDeliveryDate)
+                  : null;
+            const promisedDeliveryDate =
+              line.promisedDeliveryDate === undefined
+                ? undefined
+                : line.promisedDeliveryDate
+                  ? new Date(line.promisedDeliveryDate)
+                  : null;
+            await tx.leadItem.update({
+              where: { id: line.id },
+              data: {
+                ...(requiredDeliveryDate !== undefined
+                  ? {
+                      requiredDeliveryDate,
+                      expectedDeliveryDate: requiredDeliveryDate,
+                    }
+                  : {}),
+                ...(promisedDeliveryDate !== undefined ? { promisedDeliveryDate } : {}),
+              },
+            });
+            const cached = byId.get(line.id);
+            if (cached) {
+              if (requiredDeliveryDate !== undefined) cached.requiredDeliveryDate = requiredDeliveryDate;
+              if (promisedDeliveryDate !== undefined) cached.promisedDeliveryDate = promisedDeliveryDate;
+            }
+          }),
+        );
         changes.push(`Updated delivery dates for ${input.items.length} product line(s)`);
       }
 
-      const itemRows = await tx.leadItem.findMany({
-        where: { leadId },
-        select: { requiredDeliveryDate: true, promisedDeliveryDate: true },
-      });
-      const earliestRequired = itemRows
+      const earliestRequired = existingItems
         .map((row) => row.requiredDeliveryDate)
         .filter((value): value is Date => Boolean(value))
         .sort((a, b) => a.getTime() - b.getTime())[0];
-      const earliestPromised = itemRows
+      const earliestPromised = existingItems
         .map((row) => row.promisedDeliveryDate)
         .filter((value): value is Date => Boolean(value))
         .sort((a, b) => a.getTime() - b.getTime())[0];

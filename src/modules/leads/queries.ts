@@ -371,25 +371,33 @@ export async function leadDetail(id: string, plantIds: string[]) {
   return prisma.lead.findFirst({
     where: { id, plantId: { in: plantIds }, deletedAt: null },
     include: {
-      assignee: true,
-      attendedBy: true,
-      customer: true,
+      assignee: { select: { id: true, name: true } },
+      attendedBy: { select: { id: true, name: true } },
+      customer: {
+        select: {
+          id: true,
+          code: true,
+          name: true,
+          phone: true,
+          repeatOrderFollowUpDays: true,
+        },
+      },
       salesOrder: { select: { id: true, number: true, status: true } },
       items: {
         include: {
-          product: { 
-            select: { 
-              id: true, 
-              name: true, 
-              code: true, 
+          product: {
+            select: {
+              id: true,
+              name: true,
+              code: true,
               sellingPrice: true,
-                  grade: true,
-                  thickness: true,
-                  width: true,
-                  length: true,
-                  weightPerPiece: true,
-              productCategory: { select: { id: true, code: true, name: true } }
-            } 
+              grade: true,
+              thickness: true,
+              width: true,
+              length: true,
+              weightPerPiece: true,
+              productCategory: { select: { id: true, code: true, name: true } },
+            },
           },
           productVariant: { select: { id: true, sku: true } },
           unit: { select: { id: true, symbol: true } },
@@ -403,6 +411,7 @@ export async function leadDetail(id: string, plantIds: string[]) {
       statusHistory: {
         orderBy: { createdAt: "desc" },
         include: { changedBy: { select: { id: true, name: true } } },
+        take: 100,
       },
       verifiedBy: { select: { id: true, name: true } },
       convertedBy: { select: { id: true, name: true } },
