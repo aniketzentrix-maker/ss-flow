@@ -1,0 +1,226 @@
+"use client";
+
+import { useState } from "react";
+import { useForm } from "react-hook-form";
+import { CreateDialog } from "@/components/create-dialog";
+import {
+  DesignationPicker,
+  PermissionChecklist,
+  PlantAccessPicker,
+  RoleCheckboxList,
+  type DesignationOption,
+} from "@/components/employee-rbac-fields";
+import { FormFeedback } from "@/components/form-feedback";
+import { Button, Field, controlClass } from "@/components/ui";
+import { usePost } from "@/components/use-post";
+import { useConfirmModal } from "@/components/confirmation-modal";
+
+export type EmployeeEditValues = {
+  id: string;
+  name: string;
+  code: string;
+  designationId: string;
+  skill: string;
+  shiftId: string;
+  departmentId: string;
+  email: string;
+  roleIds: string[];
+  plantIds: string[];
+};
+
+export function EmployeeAccessForm({
+  employeeId,
+  name,
+  code,
+  permissions,
+  selectedCodes,
+}: {
+  employeeId: string;
+  name: string;
+  code: string;
+  permissions: { code: string; name: string; module: string }[];
+  selectedCodes: string[];
+}) {
+  const { post, error, success, pending } = usePost();
+  const [codes, setCodes] = useState(selectedCodes);
+  return (
+    <form
+      className="space-y-4"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!codes.length) return;
+        void post(
+          `/api/v1/employees/${employeeId}`,
+          { name, code, permissionCodes: codes },
+          { redirectTo: `/employees/${employeeId}`, successMessage: "Employee access updated." },
+        );
+      }}
+    >
+      <PermissionChecklist permissions={permissions} value={codes} onChange={setCodes} />
+      {!codes.length ? <p className="text-sm text-danger">Select at least one permission.</p> : null}
+      <FormFeedback error={error} success={success} />
+      <Button pending={pending}>Save access</Button>
+    </form>
+  );
+}
+
+export function EditEmployeeForm({
+  employee,
+  shifts,
+  departments,
+  designations,
+  plants,
+  roles,
+  canAssignAdmin,
+  redirectTo = "/employees",
+}: {
+  employee: EmployeeEditValues;
+  shifts: { id: string; name: string }[];
+  departments: { id: string; name: string }[];
+  designations: DesignationOption[];
+  plants: { id: string; name: string; code: string }[];
+  roles: { id: string; code: string; name: string }[];
+  canAssignAdmin?: boolean;
+  redirectTo?: string;
+}) {
+  const { post, error, success, pending } = usePost();
+  const [visible, setVisible] = useState(false);
+  const [roleIds, setRoleIds] = useState(employee.roleIds);
+  const [plantIds, setPlantIds] = useState(employee.plantIds);
+  const form = useForm({
+    defaultValues: { ...employee, password: "" },
+  });
+  const hasLogin = employee.roleIds.length > 0 || Boolean(employee.email);
+  return (
+    <form
+      className="grid gap-3 md:grid-cols-2"
+      onSubmit={form.handleSubmit((values) =>
+        post(
+          `/api/v1/employees/${employee.id}`,
+          {
+            ...values,
+            roleIds,
+            plantIds,
+            password: values.password || undefined,
+          },
+          {
+            redirectTo,
+            successMessage: "Employee updated successfully.",
+          },
+        ),
+      )}
+    >
+      <Field label="Name">
+        <input className={controlClass} {...form.register("name")} />
+      </Field>
+      <Field label="Employee ID">
+        <input className={controlClass} {...form.register("code")} />
+      </Field>
+      <Field label="Department">
+        <select className={controlClass} {...form.register("departmentId")}>
+          <option value="">None</option>
+          {departments.map((item) => (
+            <option key={item.id} value={item.id}>
+              {item.name}
+            </option>
+          ))}
+        </select>
+      </Field>
+      <Field label="Shift">
+        <select className={controlClass} {...form.register("shiftId")}>
+          <option value="">None</option>
+          {shifts.map((item) => (
+            <option key={item.id} value={item.id}>
+              {item.name}
+            </option>
+          ))}
+        </select>
+      </Field>
+      <DesignationPicker control={form.control} designations={designations} register={form.register} />
+      <Field label="Machine skill">
+        <input className={controlClass} {...form.register("skill")} />
+      </Field>
+      {hasLogin ? (
+        <>
+          <Field label="Login email">
+            <input className={controlClass} placeholder="Blank keeps the current login" {...form.register("email")} />
+          </Field>
+          <Field label="New password">
+            <div className="flex gap-2">
+              <input
+                className={controlClass}
+                type={visible ? "text" : "password"}
+                autoComplete="new-password"
+                placeholder="Blank keeps the current password"
+                {...form.register("password")}
+              />
+              <button type="button" className="cursor-pointer btn-ghost shrink-0" onClick={() => setVisible((value) => !value)}>
+                {visible ? "Hide" : "Show"}
+              </button>
+            </div>
+          </Field>
+          <PlantAccessPicker plants={plants} value={plantIds} onChange={setPlantIds} />
+          <RoleCheckboxList roles={roles} value={roleIds} onChange={setRoleIds} canAssignAdmin={canAssignAdmin} />
+        </>
+      ) : (
+        <p className="md:col-span-2 text-sm text-muted">This employee has no login account. Enable login from create flow or Users.</p>
+      )}
+      <div className="md:col-span-2 space-y-3">
+        <FormFeedback error={error} success={success} />
+        <Button pending={pending}>Save changes</Button>
+      </div>
+    </form>
+  );
+}
+
+export function EmployeeActions({
+  employee,
+  shifts,
+  self,
+}: {
+  employee: EmployeeEditValues;
+  shifts: { id: string; name: string }[];
+  self: boolean;
+}) {
+  const { post, error, success, pending } = usePost();
+  const { confirm, ConfirmDialog } = useConfirmModal();
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <CreateDialog label="Edit employee record" title={`Edit ${employee.code}`}>
+        <p className="text-sm text-muted">Open the full edit page for designation and role changes.</p>
+        <a href={`/employees/${employee.id}/edit`} className="btn-ghost mt-2 inline-block">
+          Go to edit
+        </a>
+      </CreateDialog>
+      {self ? null : (
+        <button
+          type="button"
+          disabled={pending}
+          className="cursor-pointer h-11 rounded-[10px] border border-danger-border bg-danger-soft px-3 text-sm font-semibold text-danger hover:bg-danger hover:text-white transition disabled:cursor-not-allowed disabled:opacity-50"
+          onClick={() => {
+            confirm({
+              title: "Deactivate employee?",
+              message: `You're about to remove employee ${employee.name} (${employee.code}).`,
+              consequence: (
+                <>
+                  <strong className="font-semibold text-slate-800 dark:text-slate-100">
+                    Login and permissions revoked.
+                  </strong>{" "}
+                  Historical activity, audit logs, and attendance remain preserved.
+                </>
+              ),
+              confirmText: "Deactivate employee",
+              cancelText: "Cancel",
+              tone: "danger",
+              onConfirm: () => post(`/api/v1/employees/${employee.id}/delete`, {}, "/employees"),
+            });
+          }}
+        >
+          Delete
+        </button>
+      )}
+      <FormFeedback error={error} success={success} />
+      {ConfirmDialog}
+    </div>
+  );
+}

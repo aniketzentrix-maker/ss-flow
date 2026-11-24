@@ -1,0 +1,163 @@
+import { Suspense } from "react";
+import Link from "next/link";
+import { Plus } from "lucide-react";
+import { LeadRowActions } from "@/components/leads/lead-row-actions";
+import { LeadListFilters } from "@/components/leads/lead-list-filters";
+import { DataTable, DeskListShell, DeskPrimaryCta } from "@/components/desk";
+import { StatusBadge } from "@/components/status-badge";
+import { plantIdsForSession, requirePage } from "@/lib/access";
+import { labelFor, when } from "@/lib/format";
+import { LeadStaleBadge } from "@/components/leads/lead-follow-up-badges";
+import { isFollowUpOverdue, leadStaleLevel } from "@/modules/leads/follow-up";
+import { leadSourceLabel, leadStatusLabel, leadStatusTone } from "@/modules/leads/status";
+import { leadDashboardStats, listLeads } from "@/modules/leads/queries";
+import { listEmployees } from "@/lib/queries";
+
+type LeadRow = Awaited<ReturnType<typeof listLeads>>["rows"][number];
+
+export default async function LeadsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{
+    q?: string;
+    status?: string;
+    source?: string;
+    assigneeId?: string;
+    overdue?: string;
+    unconfirmed?: string;
+    stale?: string;
+    page?: string;
+  }>;
+}) {
+  const session = await requirePage("lead.view");
+  const plantIds = await plantIdsForSession(session);
+  const params = await searchParams;
+  const page = Number(params.page ?? "1");
+  const [stats, list, employees] = await Promise.all([
+    leadDashboardStats(plantIds),
+    listLeads({
+      plantIds,
+      q: params.q,
+      status: params.status,
+      source: params.source,
+      assigneeId: params.assigneeId,
+      overdueFollowUp: params.overdue === "1",
+      unconfirmedPromised: params.unconfirmed === "1",
+      stale: params.stale === "1",
+      page,
+    }),
+    listEmployees(plantIds),
+  ]);
+
+  return (
+    <DeskListShell
+      title="Leads"
+      detail="Enquiries from the website and field visits — verify, quote, and convert to sales orders."
+      action={
+        <div className="flex flex-wrap items-center gap-2">
+          <Link
+            href="/leads/reports"
+            className="rounded-lg border border-border bg-card px-3 py-2 text-sm font-medium hover:bg-muted/40"
+          >
+            Reports
+          </Link>
+          {session.permissions.has("lead.manage") ? (
+            <DeskPrimaryCta href="/leads/new" icon={Plus}>
+              Create lead
+            </DeskPrimaryCta>
+          ) : null}
+        </div>
+      }
+    >
+      <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="rounded-xl border border-border bg-card p-4">
+          <p className="text-xs font-medium uppercase text-muted">Overdue follow-ups</p>
+          <p className="mt-1 text-2xl font-semibold">{stats.overdueFollowUps}</p>
+        </div>
+        {Object.entries(stats.byStatus)
+          .slice(0, 3)
+          .map(([status, count]) => (
+            <div key={status} className="rounded-xl border border-border bg-card p-4">
+              <p className="text-xs font-medium uppercase text-muted">{leadStatusLabel(status)}</p>
+              <p className="mt-1 text-2xl font-semibold">{String(count)}</p>
+            </div>
+          ))}
+      </section>
+
+      <Suspense fallback={null}>
+        <LeadListFilters employees={employees.map((employee) => ({ id: employee.id, name: employee.name }))} />
+      </Suspense>
+
+      <DataTable<LeadRow>
+        columns={[
+          {
+            id: "number",
+            header: "Lead #",
+            cell: (row) => row.leadNumber,
+          },
+          { id: "customer", header: "Customer", cell: (row) => row.customerName },
+          { id: "phone", header: "Phone", cell: (row) => row.phone },
+          {
+            id: "status",
+            header: "Status",
+            cell: (row) => (
+              <span className="inline-flex flex-wrap items-center gap-1">
+                <StatusBadge label={leadStatusLabel(row.status)} tone={leadStatusTone(row.status)} />
+                <LeadStaleBadge level={leadStaleLevel(row.status, row.lastActivityAt)} />
+              </span>
+            ),
+          },
+          { id: "source", header: "Source", cell: (row) => leadSourceLabel(row.source) },
+          { id: "assignee", header: "Assigned", cell: (row) => row.assignee?.name ?? "—" },
+          {
+            id: "followup",
+            header: "Next follow-up",
+            cell: (row) =>
+              row.nextFollowUpAt ? (
+                <span
+                  className={
+                    isFollowUpOverdue(row.status, row.nextFollowUpAt)
+                      ? "font-semibold text-danger"
+                      : ""
+                  }
+                >
+                  {when(row.nextFollowUpAt)}
+                </span>
+              ) : (
+                "—"
+              ),
+          },
+          {
+            id: "requiredDate",
+            header: "Required",
+            cell: (row) => (row.requiredDeliveryDate ? when(row.requiredDeliveryDate) : "—"),
+          },
+          {
+            id: "promisedDate",
+            header: "Promised",
+            cell: (row) => (row.promisedDeliveryDate ? when(row.promisedDeliveryDate) : "—"),
+          },
+          { id: "items", header: "Lines", cell: (row) => String(row._count.items) },
+          {
+            id: "actions",
+            header: "Actions",
+            cell: (row) => <LeadRowActions id={row.id} canDelete={session.permissions.has("lead.manage")} />,
+          },
+        ]}
+        rows={list.rows}
+        getRowKey={(row) => row.id}
+        getRowHref={(row) => `/leads/${row.id}`}
+        emptyTitle="No leads yet"
+        emptyDetail="Website enquiries and manual leads will appear here."
+      />
+
+      {list.total > list.pageSize ? (
+        <p className="text-sm text-muted">
+          Page {list.page} · {list.total} total ·{" "}
+          {page > 1 ? <Link href={`/leads?page=${page - 1}`}>Previous</Link> : null}{" "}
+          {page * list.pageSize < list.total ? <Link href={`/leads?page=${page + 1}`}>Next</Link> : null}
+        </p>
+      ) : null}
+    </DeskListShell>
+  );
+}

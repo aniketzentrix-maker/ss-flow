@@ -1,0 +1,101 @@
+"use client";
+
+import { useWatch, type Control, type FieldValues, type Path, type UseFormRegister } from "react-hook-form";
+import { PlantAccessPicker, type DesignationOption } from "@/components/employee-rbac-fields";
+import { Field, controlClass } from "@/components/ui";
+
+export type UserFormOptions = {
+  departments: { id: string; name: string }[];
+  designations?: DesignationOption[];
+  shifts: { id: string; name: string }[];
+  plants: { id: string; name: string; code: string }[];
+  defaultPlantIds: string[];
+};
+
+type AccountFields = {
+  roleCode: string;
+  staffRoleCode?: string;
+  employeeCode?: string;
+  designationId?: string;
+  newDesignation?: string;
+  departmentId?: string;
+  shiftId?: string;
+  addressLine?: string;
+};
+
+export function UserAccountTypeFields<T extends FieldValues & AccountFields>({
+  control,
+  register,
+  options,
+  plantIds,
+  onPlantIdsChange,
+}: {
+  control: Control<T>;
+  register: UseFormRegister<T>;
+  options: UserFormOptions;
+  plantIds: string[];
+  onPlantIdsChange: (ids: string[]) => void;
+}) {
+  const roleCode = useWatch({ control, name: "roleCode" as Path<T> });
+
+  if (roleCode === "supplier") {
+    return (
+      <div className="md:col-span-2 rounded-xl border border-border bg-muted/15 p-4">
+        <p className="mb-3 text-sm font-semibold">Supplier profile</p>
+        <p className="mb-4 text-xs text-muted">
+          Creates the supplier master record and portal login together so this supplier appears on purchase orders.
+        </p>
+        <Field label="Address line">
+          <input
+            className={controlClass}
+            placeholder="Street, city, state"
+            {...register("addressLine" as Path<T>)}
+          />
+        </Field>
+      </div>
+    );
+  }
+
+  if (roleCode !== "employee") return null;
+
+  return (
+    <>
+      <div className="md:col-span-2 rounded-xl border border-border bg-muted/15 p-4">
+        <p className="mb-3 text-sm font-semibold">Employee profile</p>
+        <p className="mb-4 text-xs text-muted">
+          Creates the HR employee record and a shop-floor login. Grant extra screens later from Employees.
+        </p>
+        <div className="grid gap-3 md:grid-cols-2">
+          <Field label="Employee ID">
+            <input
+              className={controlClass}
+              placeholder="Auto-generated if blank"
+              {...register("employeeCode" as Path<T>)}
+            />
+          </Field>
+          <Field label="Department">
+            <select className={controlClass} {...register("departmentId" as Path<T>)}>
+              <option value="">None</option>
+              {options.departments.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Shift">
+            <select className={controlClass} {...register("shiftId" as Path<T>)}>
+              <option value="">None</option>
+              {options.shifts.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <PlantAccessPicker plants={options.plants} value={plantIds} onChange={onPlantIdsChange} />
+        </div>
+      </div>
+    </>
+  );
+}

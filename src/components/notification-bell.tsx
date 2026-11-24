@@ -1,0 +1,110 @@
+"use client";
+
+import Link from "next/link";
+import { useEffect, useRef, useState } from "react";
+import { Bell } from "lucide-react";
+import { usePost } from "@/components/use-post";
+
+export type BellNote = {
+  id: string;
+  title: string;
+  body: string;
+  href: string | null;
+  unread: boolean;
+  when: string;
+};
+
+export function NotificationBell({
+  notes,
+  unread,
+  variant = "default",
+}: {
+  notes: BellNote[];
+  unread: number;
+  variant?: "default" | "desk";
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const { post, pending } = usePost();
+
+  useEffect(() => {
+    if (!open) return;
+    function onPointer(event: MouseEvent) {
+      if (!ref.current?.contains(event.target as Node)) setOpen(false);
+    }
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div className={`relative ${variant === "desk" ? "" : "ml-auto md:ml-0"}`} ref={ref}>
+      <button
+        type="button"
+        className={`cursor-pointer relative grid size-10 place-items-center rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--ink-muted)] transition hover:bg-[var(--bg)] hover:text-[var(--ink)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ink)] ${variant === "desk" ? "" : "rounded-[10px] border-border"}`}
+        aria-label="Notifications"
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        onClick={() => setOpen((value) => !value)}
+      >
+        <Bell className="size-4" />
+        {unread > 0 ? (
+          <span className="absolute -top-1 -right-1 grid min-w-5 place-items-center rounded-full bg-[#b42318] px-1 text-[10px] font-bold text-white">
+            {unread}
+          </span>
+        ) : null}
+      </button>
+      {open ? (
+        <div role="dialog" aria-label="Notifications" className="absolute top-12 right-0 z-40 w-[min(22rem,calc(100vw-1.5rem))] overflow-hidden rounded-2xl border border-border bg-card shadow-lg">
+          <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+            <p className="font-semibold">Notifications</p>
+            <button
+              type="button"
+              disabled={unread === 0 || pending}
+              className="cursor-pointer text-sm font-semibold text-accent transition hover:text-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
+              onClick={() => void post("/api/v1/notifications/read", {})}
+            >
+              {pending ? "Updating…" : "Mark all read"}
+            </button>
+          </div>
+          <div className="max-h-80 overflow-y-auto">
+            {notes.length ? (
+              notes.map((note) => {
+                const body = (
+                  <>
+                    <span className="flex items-start justify-between gap-2">
+                      <span className="font-semibold">{note.title}</span>
+                      {note.unread ? <span className="mt-1 size-2 shrink-0 rounded-full bg-danger" aria-label="Unread" /> : null}
+                    </span>
+                    <span className="mt-1 block text-sm text-muted">{note.body}</span>
+                    <span className="mt-1 block text-xs text-muted">{note.when}</span>
+                  </>
+                );
+                return note.href ? (
+                  <Link key={note.id} href={note.href} onClick={() => setOpen(false)} className="block border-b border-border px-4 py-3 last:border-b-0 transition hover:bg-accent-soft">
+                    {body}
+                  </Link>
+                ) : (
+                  <div key={note.id} className="border-b border-border px-4 py-3 last:border-b-0">
+                    {body}
+                  </div>
+                );
+              })
+            ) : (
+              <p className="px-4 py-6 text-sm text-muted">No notifications yet.</p>
+            )}
+          </div>
+          <Link href="/notifications" onClick={() => setOpen(false)} className="block border-t border-border px-4 py-3 text-center text-sm font-semibold transition hover:bg-accent-soft hover:text-accent">
+            View all
+          </Link>
+        </div>
+      ) : null}
+    </div>
+  );
+}

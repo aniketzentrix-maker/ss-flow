@@ -1,0 +1,252 @@
+import { Plus } from "lucide-react";
+import { Suspense } from "react";
+import { CategoryRowActions } from "@/components/masters/category-row-actions";
+import { BusinessKindBadge } from "@/components/masters/business-kind-badge";
+import { ProductCatalogFilters } from "@/components/masters/product-catalog-filters";
+import { ProductCatalogTabs, type ProductCatalogTab } from "@/components/masters/product-catalog-tabs";
+import { CatalogProductRowActions } from "@/components/masters/catalog-product-row-actions";
+import { DataTable, DeskListShell, DeskPrimaryCta } from "@/components/desk";
+import { requirePage } from "@/lib/access";
+import {
+  decorateCategories,
+  inferBusinessKindForProduct,
+  isBusinessRootCode,
+  type BusinessKind,
+} from "@/lib/domain/business-categories";
+import { listAllProductCategories } from "@/modules/masters/categories";
+import {
+  listDistinctCatalogProducts,
+  listDistinctUnits,
+  listCatalogPlants,
+  dedupeProductsBySku,
+  listAllCatalogProducts,
+} from "@/modules/masters/product-catalog";
+import { listAllGrades, listAllFinishes } from "@/modules/masters/grades-finishes";
+import { listAllSpecOptions } from "@/modules/masters/spec-options";
+import { GradeMasterTable } from "@/components/masters/grade-master-table";
+import { FinishMasterTable } from "@/components/masters/finish-master-table";
+import { SpecOptionsMasterTable } from "@/components/masters/spec-options-master-table";
+
+function matchesQuery(haystack: string, q: string) {
+  return haystack.toLowerCase().includes(q.toLowerCase());
+}
+
+export default async function ProductsHubPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ tab?: string; q?: string; business?: string; plant?: string }>;
+}) {
+  const session = await requirePage("plant.manage");
+  const { tab: tabRaw, q = "", business: businessRaw, plant: plantId = "" } = await searchParams;
+  const tab = (["products", "categories", "grades", "finishes", "specs", "units"].includes(tabRaw ?? "")
+    ? tabRaw
+    : "products") as ProductCatalogTab;
+  const business = (["trading", "manufactured"].includes(businessRaw ?? "") ? businessRaw : "") as
+    | BusinessKind
+    | "";
+  const query = q.trim();
+
+  const [catalogProducts, categories, units, grades, finishes, specOptions, catalogPlants] = await Promise.all([
+    plantId
+      ? listAllCatalogProducts({ q: query || undefined })
+      : listDistinctCatalogProducts({ q: query || undefined, preferPlantIds: session.plantIds }),
+    listAllProductCategories({ activeOnly: false }),
+    listDistinctUnits(),
+    tab === "grades" ? listAllGrades({ plantIds: session.plantIds, q: query || undefined }) : Promise.resolve([]),
+    tab === "finishes" ? listAllFinishes({ plantIds: session.plantIds, q: query || undefined }) : Promise.resolve([]),
+    tab === "specs" ? listAllSpecOptions({ plantIds: session.plantIds, q: query || undefined }) : Promise.resolve([]),
+    listCatalogPlants(),
+  ]);
+  const decoratedCategories = decorateCategories(categories);
+
+  const filteredCatalog = dedupeProductsBySku(
+    catalogProducts.filter((row) => {
+      if (plantId && row.plant.id !== plantId) return false;
+      const kind = inferBusinessKindForProduct({
+        sku: row.sku,
+        name: row.name,
+        productType: row.productType,
+        supplyMode: row.supplyMode,
+        category: row.category,
+      });
+      if (business && kind !== business) return false;
+      return true;
+    }),
+  );
+
+  const filteredCategories = decoratedCategories.filter((row) => {
+    if (business && row.businessKind !== business) return false;
+    if (query) return [row.code, row.name].some((value) => matchesQuery(value, query));
+    return true;
+  });
+
+  const title =
+    tab === "categories"
+      ? "Product catalog · Categories"
+      : tab === "grades"
+        ? "Product catalog · Grade Master"
+        : tab === "finishes"
+          ? "Product catalog · Finish Master"
+          : tab === "specs"
+            ? "Product catalog · Specifications Master"
+            : tab === "units"
+              ? "Product catalog · Units"
+              : "Product catalog";
+
+  const detail =
+    tab === "grades"
+      ? "Reusable material grades with product-specific compatibility mappings. Add or associate grades with products."
+      : tab === "finishes"
+        ? "Reusable surface finishes with product-specific compatibility mappings. Add or associate finishes with products."
+        : tab === "specs"
+          ? "Reusable product specification options (thicknesses, diameters, widths, lengths, etc.). Add and manage options across products."
+          : "Every product sits under Trading Products or Manufactured Products. Subcategories (coil, sheet, utensils, and so on) stay under those two lines.";
+
+  return (
+    <DeskListShell
+      title={title}
+      detail={detail}
+      action={
+        tab === "products" ? (
+          <DeskPrimaryCta href="/products/new" icon={Plus}>
+            Create product
+          </DeskPrimaryCta>
+        ) : tab === "categories" ? (
+          <DeskPrimaryCta href="/categories/new" icon={Plus}>
+            Create subcategory
+          </DeskPrimaryCta>
+        ) : null
+      }
+    >
+      <ProductCatalogTabs active={tab} q={query || undefined} business={business || undefined} />
+      {tab === "products" || tab === "categories" ? (
+        <Suspense>
+          <ProductCatalogFilters tab={tab} plants={catalogPlants} />
+        </Suspense>
+      ) : null}
+
+      {tab === "products" ? (
+        <DataTable
+          columns={[
+            { id: "sku", header: "SKU", cell: (row) => row.sku },
+            { id: "name", header: "Product", cell: (row) => row.name },
+            { id: "specifications", header: "Active specs", cell: (row) => row._count.variants },
+            { id: "status", header: "Status", cell: (row) => row.isActive ? "Active" : "Inactive" },
+            {
+              id: "business",
+              header: "Category",
+              cell: (row) => (
+                <BusinessKindBadge
+                  kind={inferBusinessKindForProduct({
+                    sku: row.sku,
+                    name: row.name,
+                    productType: row.productType,
+                    supplyMode: row.supplyMode,
+                    category: row.category,
+                  })}
+                />
+              ),
+            },
+            { id: "grade", header: "Grade", cell: (row) => row.variants[0]?.grade ?? "—" },
+            { id: "finish", header: "Finish", cell: (row) => row.variants[0]?.finish ?? "—" },
+            { id: "width", header: "Width", cell: (row) => row.variants[0]?.widthMm?.toString() ?? "—" },
+            { id: "length", header: "Length", cell: (row) => row.variants[0]?.lengthMm?.toString() ?? "—" },
+            { id: "unit", header: "Default UOM", cell: (row) => row.baseUnit?.symbol ?? "—" },
+            {
+              id: "actions",
+              header: "Action",
+              headerClassName: "w-[120px] text-right",
+              cellClassName: "text-right",
+              stopRowClick: true,
+              cell: (row) => <CatalogProductRowActions id={row.id} />,
+            },
+          ]}
+          rows={filteredCatalog}
+          getRowKey={(row) => row.sku.toUpperCase()}
+          getRowHref={(row) => `/products/catalog/${row.id}`}
+          emptyTitle={query || business ? "No products match these filters" : "No product families yet"}
+          emptyDetail={
+            query || business
+              ? "Clear filters to see the full catalog."
+              : "Shared product catalog — one row per SKU across plants."
+          }
+        />
+      ) : null}
+
+      {tab === "categories" ? (
+        <DataTable
+          columns={[
+            { id: "code", header: "Code", cell: (row) => row.code },
+            { id: "name", header: "Name", cell: (row) => row.name },
+            {
+              id: "business",
+              header: "Business",
+              cell: (row) => <BusinessKindBadge kind={row.businessKind} />,
+            },
+            { id: "type", header: "Inventory type", cell: (row) => row.categoryType.replaceAll("_", " ") },
+            { id: "form", header: "Form", cell: (row) => row.productForm ?? "—" },
+            {
+              id: "parent",
+              header: "Parent",
+              cell: (row) => (isBusinessRootCode(row.code) ? "—" : row.parent?.name ?? "—"),
+            },
+            { id: "status", header: "Status", cell: (row) => row.status },
+            {
+              id: "actions",
+              header: "Action",
+              headerClassName: "w-[120px] text-right",
+              cellClassName: "text-right",
+              stopRowClick: true,
+              cell: (row) =>
+                isBusinessRootCode(row.code) ? (
+                  <span className="text-xs text-muted">Locked</span>
+                ) : (
+                  <CategoryRowActions
+                    id={row.id}
+                    canDelete={row._count.products === 0 && row._count.children === 0 && row._count.catalogProducts === 0}
+                  />
+                ),
+            },
+          ]}
+          rows={filteredCategories}
+          getRowKey={(row) => row.id}
+          getRowHref={(row) => `/categories/${row.id}`}
+          emptyTitle={query || business ? "No categories match these filters" : "No categories yet"}
+          emptyDetail="Trading Products and Manufactured Products are the only top-level lines. Add subcategories under them."
+        />
+      ) : null}
+
+      {tab === "grades" ? (
+        <GradeMasterTable
+          grades={grades}
+          products={catalogProducts.map((p) => ({ id: p.id, name: p.name, sku: p.sku }))}
+        />
+      ) : null}
+
+      {tab === "finishes" ? (
+        <FinishMasterTable
+          finishes={finishes}
+          products={catalogProducts.map((p) => ({ id: p.id, name: p.name, sku: p.sku }))}
+        />
+      ) : null}
+
+      {tab === "specs" ? (
+        <SpecOptionsMasterTable initialItems={specOptions} />
+      ) : null}
+
+      {tab === "units" ? (
+        <DataTable
+          columns={[
+            { id: "symbol", header: "Symbol", cell: (row) => row.symbol },
+            { id: "name", header: "Name", cell: (row) => row.name },
+            { id: "type", header: "Type", cell: (row) => row.unitType },
+          ]}
+          rows={units}
+          getRowKey={(row) => row.symbol.toUpperCase()}
+          emptyTitle="No units"
+          emptyDetail="Shared UOM catalog (KG, T, PCS, M, FT, IN). Same symbols apply across plants."
+        />
+      ) : null}
+    </DeskListShell>
+  );
+}
