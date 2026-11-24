@@ -3,6 +3,7 @@
 import { CreatableSpecSelect } from "@/components/ui/creatable-spec-select";
 import {
   COMMON_GAUGES,
+  applySharedMmGaugeUnit,
   formatThicknessMm,
   gaugeInputToThicknessMm,
   gaugeLabel,
@@ -32,6 +33,7 @@ const unitToggleClass = (active: boolean) =>
 export function LeadThicknessField({
   specs,
   options,
+  widthOptions = [],
   onSpecsChange,
   onGaugeThicknessMm,
   canManageProducts,
@@ -41,6 +43,8 @@ export function LeadThicknessField({
 }: {
   specs: Record<string, string>;
   options: string[];
+  /** Catalog width options — kept in sync when shared mm/gauge unit changes. */
+  widthOptions?: string[];
   onSpecsChange: (next: Record<string, string>) => void;
   onGaugeThicknessMm: (mm: string) => void;
   canManageProducts: boolean;
@@ -65,52 +69,11 @@ export function LeadThicknessField({
     unit === "mm" && mmValue.trim() ? thicknessInputToGauge(mmValue) : null;
 
   function setUnit(next: ThicknessInputUnit) {
-    if (next === "mm") {
-      const nextSpecs: Record<string, string> = {
-        ...specs,
-        [THICKNESS_INPUT_UNIT_SPEC_KEY]: "mm",
-      };
-      if (convertedFromGauge != null) {
-        const exactMm = formatThicknessMm(convertedFromGauge);
-        nextSpecs.thickness = snapThicknessToOptions(convertedFromGauge, mmOptions);
-        nextSpecs[THICKNESS_CONVERTED_MM_SPEC_KEY] = exactMm;
-        if (parseGaugeNumber(gaugeRaw) != null) {
-          nextSpecs[THICKNESS_GAUGE_SPEC_KEY] = String(parseGaugeNumber(gaugeRaw));
-          nextSpecs[THICKNESS_GAUGE_SYSTEM_SPEC_KEY] = "farma";
-        }
-        onSpecsChange(nextSpecs);
-        onGaugeThicknessMm(exactMm);
-        return;
-      }
-      delete nextSpecs[THICKNESS_GAUGE_SPEC_KEY];
-      delete nextSpecs[THICKNESS_GAUGE_SYSTEM_SPEC_KEY];
-      delete nextSpecs[THICKNESS_CONVERTED_MM_SPEC_KEY];
-      onSpecsChange(nextSpecs);
-      onGaugeThicknessMm(mmValue.trim());
-      return;
-    }
-
-    const nextSpecs: Record<string, string> = {
-      ...specs,
-      [THICKNESS_INPUT_UNIT_SPEC_KEY]: "gauge",
-      [THICKNESS_GAUGE_SYSTEM_SPEC_KEY]: "farma",
-    };
-    if (mmValue.trim()) {
-      const matched = thicknessInputToGauge(mmValue);
-      if (matched != null) {
-        nextSpecs[THICKNESS_GAUGE_SPEC_KEY] = String(matched);
-        const exactMm = formatThicknessMm(gaugeToThicknessMm(matched)!);
-        nextSpecs[THICKNESS_CONVERTED_MM_SPEC_KEY] = exactMm;
-        nextSpecs.thickness = snapThicknessToOptions(gaugeToThicknessMm(matched)!, mmOptions);
-        onSpecsChange(nextSpecs);
-        onGaugeThicknessMm(exactMm);
-        return;
-      }
-      nextSpecs[THICKNESS_GAUGE_SPEC_KEY] = "";
-      delete nextSpecs.thickness;
-      delete nextSpecs[THICKNESS_CONVERTED_MM_SPEC_KEY];
-    }
+    const nextSpecs = applySharedMmGaugeUnit(specs, next, options, widthOptions);
     onSpecsChange(nextSpecs);
+    onGaugeThicknessMm(
+      nextSpecs[THICKNESS_CONVERTED_MM_SPEC_KEY]?.trim() || nextSpecs.thickness?.trim() || "",
+    );
   }
 
   function applyMmThickness(thickness: string) {

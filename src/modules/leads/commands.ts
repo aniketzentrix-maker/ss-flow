@@ -1183,6 +1183,167 @@ export async function addLeadActivityManual(
   });
 }
 
+export type LeadItemPatchInput = {
+  id: string;
+  itemDescription?: string | null;
+  quantity: string;
+  uom?: string;
+  grade?: string | null;
+  thickness?: string | null;
+  finish?: string | null;
+  packing?: string | null;
+  width?: string | null;
+  length?: string | null;
+  diameter?: string | null;
+  notes?: string | null;
+  requiredDeliveryDate?: string | null;
+  promisedDeliveryDate?: string | null;
+};
+
+function parseOptionalDate(value: string | null | undefined) {
+  if (value === undefined) return undefined;
+  if (value == null || !String(value).trim()) return null;
+  return new Date(String(value).trim());
+}
+
+function setOrClearSpec(specs: Record<string, unknown>, key: string, value: string | null | undefined) {
+  if (value === undefined) return;
+  const trimmed = value?.trim() ?? "";
+  if (!trimmed) delete specs[key];
+  else specs[key] = trimmed;
+}
+
+/** Update requested items while official follow-up result is still PENDING. */
+export async function updateLeadItems(
+  session: SessionUser,
+  leadId: string,
+  input: { items: LeadItemPatchInput[] },
+  key: string | null,
+) {
+  allow(session, "lead.manage");
+  return runCommand({
+    userId: session.userId,
+    route: "lead.items",
+    key,
+    run: async (tx) => {
+      const lead = await leadForSession(tx, leadId, session);
+      if (lead.status === "CONVERTED" || lead.salesOrderId) {
+        throw new AppError(409, "INVALID_STATE", "Converted leads cannot change requested items.");
+      }
+      if ((lead.result ?? "PENDING").toUpperCase() !== "PENDING") {
+        throw new AppError(
+          409,
+          "INVALID_STATE",
+          "Requested items can only be edited while official follow-up is Pending.",
+        );
+      }
+
+      const existingItems = await tx.leadItem.findMany({ where: { leadId } });
+      const byId = new Map(existingItems.map((row) => [row.id, row]));
+      if (!input.items.length) {
+        throw new AppError(400, "VALIDATION", "Provide at least one lead item to update.");
+      }
+      for (const line of input.items) {
+        if (!byId.has(line.id)) {
+          throw new AppError(400, "VALIDATION", "One or more lead items do not belong to this lead.");
+        }
+      }
+
+      for (const line of input.items) {
+        const current = byId.get(line.id)!;
+        const specs =
+          current.specifications &&
+          typeof current.specifications === "object" &&
+          !Array.isArray(current.specifications)
+            ? { ...(current.specifications as Record<string, unknown>) }
+            : {};
+
+        setOrClearSpec(specs, "grade", line.grade);
+        setOrClearSpec(specs, "thickness", line.thickness);
+        setOrClearSpec(specs, "finish", line.finish);
+        setOrClearSpec(specs, "width", line.width);
+        setOrClearSpec(specs, "length", line.length);
+        setOrClearSpec(specs, "diameter", line.diameter);
+
+        const requiredDeliveryDate = parseOptionalDate(line.requiredDeliveryDate);
+        const promisedDeliveryDate = parseOptionalDate(line.promisedDeliveryDate);
+        const uom = line.uom?.trim() || current.uom || "PCS";
+        const description =
+          line.itemDescription === undefined
+            ? current.itemDescription
+            : line.itemDescription?.trim() || null;
+        const packingTrimmed =
+          line.packing === undefined ? current.packing : line.packing?.trim() || null;
+        const thicknessTrimmed =
+          line.thickness === undefined ? undefined : line.thickness?.trim() || "";
+        const gaugeThicknessMm =
+          thicknessTrimmed === undefined
+            ? undefined
+            : thicknessTrimmed && Number.isFinite(Number(thicknessTrimmed))
+              ? new Decimal(thicknessTrimmed)
+              : null;
+
+        await tx.leadItem.update({
+          where: { id: line.id },
+          data: {
+            itemDescription: description,
+            quantity: line.quantity,
+            uom,
+            ...(line.grade !== undefined
+              ? { mfgGrade: line.grade?.trim() || null }
+              : {}),
+            ...(line.finish !== undefined
+              ? { finish: line.finish?.trim() || null }
+              : {}),
+            packing: packingTrimmed,
+            ...(gaugeThicknessMm !== undefined ? { gaugeThicknessMm } : {}),
+            notes: line.notes === undefined ? current.notes : line.notes?.trim() || null,
+            specifications: specs as object,
+            ...(requiredDeliveryDate !== undefined
+              ? {
+                  requiredDeliveryDate,
+                  expectedDeliveryDate: requiredDeliveryDate,
+                }
+              : {}),
+            ...(promisedDeliveryDate !== undefined ? { promisedDeliveryDate } : {}),
+          },
+        });
+      }
+
+      const refreshed = await tx.leadItem.findMany({
+        where: { leadId },
+        select: { requiredDeliveryDate: true, promisedDeliveryDate: true },
+      });
+      const earliestRequired = refreshed
+        .map((row) => row.requiredDeliveryDate)
+        .filter((value): value is Date => Boolean(value))
+        .sort((a, b) => a.getTime() - b.getTime())[0];
+      const earliestPromised = refreshed
+        .map((row) => row.promisedDeliveryDate)
+        .filter((value): value is Date => Boolean(value))
+        .sort((a, b) => a.getTime() - b.getTime())[0];
+
+      await tx.lead.update({
+        where: { id: leadId },
+        data: {
+          requiredDeliveryDate: earliestRequired ?? null,
+          promisedDeliveryDate: earliestPromised ?? null,
+          lastActivityAt: new Date(),
+        },
+      });
+
+      await addLeadActivity(tx, {
+        leadId,
+        userId: session.userId,
+        activityType: "update",
+        description: `Updated ${input.items.length} requested item line(s).`,
+      });
+
+      return { id: leadId, itemCount: input.items.length };
+    },
+  });
+}
+
 export async function updateLeadDeliveryDates(
   session: SessionUser,
   leadId: string,

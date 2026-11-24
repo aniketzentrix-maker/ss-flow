@@ -991,6 +991,30 @@ export const deliveryDatesSchema = z.object({
     .optional(),
 });
 
+/** Patch requested items on a pending (official follow-up) lead. */
+export const leadItemsUpdateSchema = z.object({
+  items: z
+    .array(
+      z.object({
+        id: z.string().uuid(),
+        itemDescription: z.string().max(500).nullable().optional(),
+        quantity: qty,
+        uom: z.string().max(12).optional(),
+        grade: z.string().max(80).nullable().optional(),
+        thickness: z.string().max(80).nullable().optional(),
+        finish: z.string().max(80).nullable().optional(),
+        packing: z.string().max(120).nullable().optional(),
+        width: z.string().max(80).nullable().optional(),
+        length: z.string().max(80).nullable().optional(),
+        diameter: z.string().max(80).nullable().optional(),
+        notes: z.string().max(500).nullable().optional(),
+        requiredDeliveryDate: z.string().max(32).nullable().optional(),
+        promisedDeliveryDate: z.string().max(32).nullable().optional(),
+      }),
+    )
+    .min(1),
+});
+
 export const publicLeadEnquirySchema = z.object({
   plantCode: z.string().max(32).optional(),
   customerName: z.string().min(2).max(120),

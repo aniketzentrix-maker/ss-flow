@@ -38,6 +38,13 @@ export const THICKNESS_GAUGE_SYSTEM_SPEC_KEY = "thicknessGaugeSystem";
 /** Exact gauge→mm conversion (before optional catalog snap on `thickness`). */
 export const THICKNESS_CONVERTED_MM_SPEC_KEY = "thicknessConvertedMm";
 
+/**
+ * Width follows the same mm / gauge mode as thickness (`thicknessInputUnit`).
+ * Farma chart conversion is stored on these keys; catalog value stays on `width`.
+ */
+export const WIDTH_GAUGE_SPEC_KEY = "widthGauge";
+export const WIDTH_CONVERTED_MM_SPEC_KEY = "widthConvertedMm";
+
 /** Gauges present on the Farma sheet (highest → lowest). */
 export const COMMON_SWG_GAUGES = [
   30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 16, 14, 12, 10, 8,
@@ -161,4 +168,102 @@ export function thicknessMmDisplayFromSpecs(specs: Record<string, string>): stri
     return gauge != null ? `${mm} mm (${gaugeLabel(gauge)})` : `${mm} mm`;
   }
   return "";
+}
+
+type SheetSpecMap = Record<string, string>;
+
+function applyDimensionToMm(
+  specs: SheetSpecMap,
+  valueKey: "thickness" | "width",
+  gaugeKey: string,
+  convertedKey: string,
+  mmOptions: string[],
+): void {
+  const gaugeRaw = specs[gaugeKey] ?? "";
+  const converted = gaugeRaw ? gaugeInputToThicknessMm(gaugeRaw) : null;
+  if (converted != null) {
+    const exactMm = formatThicknessMm(converted);
+    specs[valueKey] = snapThicknessToOptions(converted, mmOptions);
+    specs[convertedKey] = exactMm;
+    const gaugeNum = parseGaugeNumber(gaugeRaw);
+    if (gaugeNum != null) specs[gaugeKey] = String(gaugeNum);
+    return;
+  }
+  delete specs[gaugeKey];
+  delete specs[convertedKey];
+}
+
+function applyDimensionToGauge(
+  specs: SheetSpecMap,
+  valueKey: "thickness" | "width",
+  gaugeKey: string,
+  convertedKey: string,
+  mmOptions: string[],
+): void {
+  const mmValue = specs[valueKey] ?? "";
+  if (!mmValue.trim()) {
+    specs[gaugeKey] = specs[gaugeKey] ?? "";
+    return;
+  }
+  const matched = thicknessInputToGauge(mmValue);
+  if (matched != null) {
+    const exactMm = formatThicknessMm(gaugeToThicknessMm(matched)!);
+    specs[gaugeKey] = String(matched);
+    specs[convertedKey] = exactMm;
+    specs[valueKey] = snapThicknessToOptions(gaugeToThicknessMm(matched)!, mmOptions);
+    return;
+  }
+  specs[gaugeKey] = "";
+  delete specs[valueKey];
+  delete specs[convertedKey];
+}
+
+/**
+ * Keep thickness + width on the same Farma mm/gauge mode.
+ * `thicknessInputUnit` is the shared source of truth.
+ */
+export function applySharedMmGaugeUnit(
+  specs: SheetSpecMap,
+  nextUnit: ThicknessInputUnit,
+  thicknessOptions: string[] = [],
+  widthOptions: string[] = [],
+): SheetSpecMap {
+  const next: SheetSpecMap = {
+    ...specs,
+    [THICKNESS_INPUT_UNIT_SPEC_KEY]: nextUnit,
+    [THICKNESS_GAUGE_SYSTEM_SPEC_KEY]: "farma",
+  };
+  const thicknessMmOpts = thicknessMmOptions(thicknessOptions);
+  const widthMmOpts = thicknessMmOptions(widthOptions);
+
+  if (nextUnit === "mm") {
+    applyDimensionToMm(
+      next,
+      "thickness",
+      THICKNESS_GAUGE_SPEC_KEY,
+      THICKNESS_CONVERTED_MM_SPEC_KEY,
+      thicknessMmOpts,
+    );
+    applyDimensionToMm(next, "width", WIDTH_GAUGE_SPEC_KEY, WIDTH_CONVERTED_MM_SPEC_KEY, widthMmOpts);
+    if (!next[THICKNESS_GAUGE_SPEC_KEY]) {
+      delete next[THICKNESS_GAUGE_SPEC_KEY];
+      delete next[THICKNESS_GAUGE_SYSTEM_SPEC_KEY];
+      delete next[THICKNESS_CONVERTED_MM_SPEC_KEY];
+    }
+    if (!next[WIDTH_GAUGE_SPEC_KEY]) {
+      delete next[WIDTH_GAUGE_SPEC_KEY];
+      delete next[WIDTH_CONVERTED_MM_SPEC_KEY];
+    }
+    return next;
+  }
+
+  applyDimensionToGauge(
+    next,
+    "thickness",
+    THICKNESS_GAUGE_SPEC_KEY,
+    THICKNESS_CONVERTED_MM_SPEC_KEY,
+    thicknessMmOpts,
+  );
+  applyDimensionToGauge(next, "width", WIDTH_GAUGE_SPEC_KEY, WIDTH_CONVERTED_MM_SPEC_KEY, widthMmOpts);
+  return next;
 }

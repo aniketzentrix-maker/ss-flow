@@ -1,9 +1,9 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { LeadDetailActions } from "@/components/leads/lead-detail-actions";
+import { LeadRequestedItemsPanel } from "@/components/leads/lead-requested-items-panel";
 import {
   CalloutBanner,
-  DataTable,
   DetailActionLink,
   FieldGrid,
   KeyValueList,
@@ -406,25 +406,58 @@ export default async function LeadDetailPage({
     };
   });
   const formatPrice = (value: string) => (value ? `₹${value}` : "—");
-  const tableRows = rows.map((row) => ({
-    category: row.category,
-    description: row.description,
-    sku: row.sku,
-    grade: row.grade,
-    thickness: <SpecConversionCell parts={row.thicknessParts} />,
-    finish: row.finish,
-    dimensions: row.dimensions,
-    diameter: <SpecConversionCell parts={row.diameterParts} />,
-    packing: row.packing,
-    specifications: row.inlineSpecs,
-    quantity: row.quantity,
-    uom: row.uom,
-    marketRate: formatPrice(row.marketPrice),
-    offerRate: formatPrice(row.priceOffered),
-    requiredDelivery: row.requiredDelivery,
-    promisedDelivery: row.promisedDelivery,
-    weight: row.weight,
-  }));
+  const canEditRequestedItems =
+    session.permissions.has("lead.manage") &&
+    (lead.result ?? "PENDING").toUpperCase() === "PENDING" &&
+    lead.status !== "CONVERTED" &&
+    !lead.salesOrder;
+
+  const editableItems = lead.items.map((item, index) => {
+    const row = rows[index]!;
+    const specs = parseSpecifications(item.specifications);
+    const thicknessEdit =
+      item.gaugeThicknessMm?.toString() ||
+      (typeof specs.thicknessConvertedMm === "string" ? specs.thicknessConvertedMm : "") ||
+      (typeof specs.thickness === "string" ? specs.thickness : "") ||
+      "";
+    return {
+      id: item.id,
+      category: row.category,
+      description: row.description === "—" ? "" : row.description,
+      sku: row.sku,
+      grade: row.grade === "—" ? "" : row.grade,
+      thickness: thicknessEdit,
+      finish: row.finish === "—" ? "" : row.finish,
+      width: specs.width != null && specs.width !== "" ? String(specs.width) : "",
+      length: specs.length != null && specs.length !== "" ? String(specs.length) : "",
+      diameter:
+        row.diameterPlain && row.diameterPlain !== "—"
+          ? row.diameterPlain
+          : specs.diameter != null && specs.diameter !== ""
+            ? String(specs.diameter)
+            : "",
+      packing: row.packing === "—" ? "" : row.packing,
+      quantity: row.quantity,
+      uom: row.uom,
+      marketRate: formatPrice(row.marketPrice),
+      offerRate: formatPrice(row.priceOffered),
+      requiredDeliveryDate: item.requiredDeliveryDate
+        ? item.requiredDeliveryDate.toISOString().slice(0, 10)
+        : item.expectedDeliveryDate
+          ? item.expectedDeliveryDate.toISOString().slice(0, 10)
+          : "",
+      promisedDeliveryDate: item.promisedDeliveryDate
+        ? item.promisedDeliveryDate.toISOString().slice(0, 10)
+        : "",
+      weight: row.weight === "—" ? "" : row.weight,
+      thicknessDisplay: <SpecConversionCell parts={row.thicknessParts} />,
+      diameterDisplay: <SpecConversionCell parts={row.diameterParts} />,
+      dimensionsDisplay: row.dimensions,
+      specificationsDisplay: row.inlineSpecs,
+      requiredDeliveryLabel: row.requiredDelivery,
+      promisedDeliveryLabel: row.promisedDelivery,
+    };
+  });
 
   const sourceText = labelFor(lead.source);
   const contactName = lead.contactPerson || lead.customerName;
@@ -687,31 +720,11 @@ export default async function LeadDetailPage({
       </div>
 
       <SectionCard title="Requested items" count={lead.items.length}>
-        <div className="-mx-4 -mb-4">
-          <DataTable
-            minTableWidth={1500}
-            columns={[
-              { key: "category", label: "Category", minWidth: 100 },
-              { key: "description", label: "Material / description", minWidth: 160 },
-              { key: "sku", label: "SKU", minWidth: 120 },
-              { key: "grade", label: "Grade", minWidth: 56 },
-              { key: "thickness", label: "Thickness", minWidth: 72 },
-              { key: "finish", label: "Finish", minWidth: 56 },
-              { key: "dimensions", label: "Dimensions", minWidth: 88 },
-              { key: "diameter", label: "Diameter", minWidth: 72 },
-              { key: "packing", label: "Packing", minWidth: 88 },
-              { key: "specifications", label: "Specifications", minWidth: 200 },
-              { key: "quantity", label: "Qty", align: "right", minWidth: 48 },
-              { key: "uom", label: "UOM", minWidth: 44 },
-              { key: "marketRate", label: "Market rate", align: "right", minWidth: 88 },
-              { key: "offerRate", label: "Offered to customer", align: "right", minWidth: 100 },
-              { key: "requiredDelivery", label: "Required", minWidth: 96 },
-              { key: "promisedDelivery", label: "Promised", minWidth: 96 },
-              { key: "weight", label: "Unit wt.", align: "right", minWidth: 72 },
-            ]}
-            rows={tableRows}
-          />
-        </div>
+        <LeadRequestedItemsPanel
+          leadId={lead.id}
+          canEdit={canEditRequestedItems}
+          items={editableItems}
+        />
       </SectionCard>
 
       {!lead.salesOrder &&

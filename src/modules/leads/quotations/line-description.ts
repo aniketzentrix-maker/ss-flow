@@ -71,16 +71,24 @@ export function buildLeadItemLineSpecSummary(item: LeadItemLineSource): string {
     parts.push(asGauge ? `${gauge} SWG → ${thickness} mm` : `${thickness} mm`);
   }
 
-  const width = specString(specs.width);
+  const widthMm = specString(specs.widthConvertedMm ?? specs.width);
+  const widthGauge = specString(specs.widthGauge);
+  const widthAsGauge = specs.thicknessInputUnit === "gauge" && widthGauge;
   const length = specString(specs.length);
   const diameterKeys = ["diameter", "wireDiameterMm", "innerDiameterMm", "outerDiameterMm"] as const;
   const diameterKey = diameterKeys.find(
     (key) => specString(specs[key]) || specs[`${key}InputUnit`] === "inch",
   );
   const diameter = diameterKey ? specString(specs[diameterKey]) : "";
-  if (width && length) parts.push(`${width} × ${length} mm`);
-  else if (width) parts.push(`W ${width} mm`);
-  else if (length) parts.push(`L ${length} mm`);
+  if (widthMm && length) {
+    parts.push(
+      widthAsGauge
+        ? `${widthGauge} SWG → ${widthMm} × ${length} mm`
+        : `${widthMm} × ${length} mm`,
+    );
+  } else if (widthMm) {
+    parts.push(widthAsGauge ? `W ${widthGauge} SWG → ${widthMm} mm` : `W ${widthMm} mm`);
+  } else if (length) parts.push(`L ${length} mm`);
   else if (diameter && diameterKey) {
     const inch = specString(specs[`${diameterKey}Inch`]);
     const asInch = specs[`${diameterKey}InputUnit`] === "inch" && inch;
@@ -114,7 +122,7 @@ export function buildLeadItemSizeColumn(item: LeadItemLineSource, fallback?: str
   const specs = parseSpecs(item.specifications);
   const size = specString(item.sizeOrCapacity ?? specs.size ?? fallback);
   if (size) return size;
-  const width = specString(specs.width);
+  const width = specString(specs.widthConvertedMm ?? specs.width);
   const length = specString(specs.length);
   if (width && length) return `${width} × ${length} mm`;
   return fallback?.trim() || "—";

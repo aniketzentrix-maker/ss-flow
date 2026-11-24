@@ -5,8 +5,18 @@ const globalForPrisma = globalThis as unknown as {
   prismaUrl?: string;
 };
 
+/** `channel_binding=require` often breaks Node/pg on Windows against Neon pooler. */
+export function normalizeDatabaseUrl(url: string | undefined): string | undefined {
+  if (!url) return url;
+  let next = url.replace(/([?&])channel_binding=require(&|$)/g, (_, sep, amp) =>
+    amp === "&" ? sep : "",
+  );
+  next = next.replace(/\?&/, "?").replace(/[?&]$/, "");
+  return next;
+}
+
 function currentClient() {
-  const url = process.env.DATABASE_URL;
+  const url = normalizeDatabaseUrl(process.env.DATABASE_URL);
   if (!globalForPrisma.prisma || globalForPrisma.prismaUrl !== url) {
     void globalForPrisma.prisma?.$disconnect();
     globalForPrisma.prisma = new PrismaClient({
