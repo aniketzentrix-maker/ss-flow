@@ -21,6 +21,16 @@ function thicknessMm(specs: Record<string, string>): number | null {
   );
 }
 
+function widthMm(specs: Record<string, string>): number | null {
+  return (
+    parsePositive(specs.widthConvertedMm) ??
+    parsePositive(specs.width) ??
+    (specs.thicknessInputUnit === "gauge" && specs.widthGauge
+      ? gaugeInputToThicknessMm(specs.widthGauge)
+      : null)
+  );
+}
+
 function diameterMm(specs: Record<string, string>): number | null {
   const keys = ["diameter", "wireDiameterMm", "innerDiameterMm", "outerDiameterMm"] as const;
   for (const key of keys) {
@@ -85,7 +95,7 @@ export function estimateLeadItemWeightKg(input: EstimateLeadItemWeightInput): st
   }
 
   const t = thicknessMm(specs);
-  const w = parsePositive(specs.width);
+  const w = widthMm(specs);
   const l = parsePositive(specs.length);
   const b = parsePositive(specs.breadth);
   const d = diameterMm(specs);

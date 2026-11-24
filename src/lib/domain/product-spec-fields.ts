@@ -41,6 +41,8 @@ export const ALWAYS_HIDDEN_SPEC_KEYS = [
   "thicknessGauge",
   "thicknessGaugeSystem",
   "thicknessConvertedMm",
+  "widthGauge",
+  "widthConvertedMm",
   "diameterInputUnit",
   "diameterInch",
   "diameterConvertedMm",

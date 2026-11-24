@@ -1,5 +1,6 @@
 import { cookies } from "next/headers";
 import { prisma } from "@/db";
+import { withDbRetry } from "@/lib/db/retry";
 import { permissionsForSession } from "@/lib/rbac/authz";
 import { hashSecret } from "../ids";
 
@@ -21,27 +22,33 @@ export async function getSession(): Promise<SessionUser | null> {
   const jar = await cookies();
   const token = jar.get(COOKIE)?.value;
   if (!token) return null;
-  const session = await prisma.session.findUnique({
-    where: { tokenHash: hashSecret(token) },
-    include: {
-      user: {
-        include: {
-          employee: true,
-          plantAccess: { include: { plant: { select: { code: true } } } },
-          userRoles: { include: { role: { include: { permissions: { include: { permission: true } } } } } },
-          userPermissions: { include: { permission: true } },
+  const session = await withDbRetry(() =>
+    prisma.session.findUnique({
+      where: { tokenHash: hashSecret(token) },
+      include: {
+        user: {
+          include: {
+            employee: true,
+            plantAccess: { include: { plant: { select: { code: true } } } },
+            userRoles: { include: { role: { include: { permissions: { include: { permission: true } } } } } },
+            userPermissions: { include: { permission: true } },
+          },
         },
       },
-    },
-  });
+    }),
+  );
   if (!session || session.user.disabledAt || session.user.deletedAt) return null;
   const now = Date.now();
   if (session.expiresAt.getTime() < now || now - session.lastSeenAt.getTime() > IDLE_MS) {
-    await prisma.session.delete({ where: { id: session.id } }).catch(() => undefined);
+    await withDbRetry(() => prisma.session.delete({ where: { id: session.id } })).catch(
+      () => undefined,
+    );
     return null;
   }
   if (now - session.lastSeenAt.getTime() > 1000 * 60 * 5) {
-    await prisma.session.update({ where: { id: session.id }, data: { lastSeenAt: new Date() } });
+    await withDbRetry(() =>
+      prisma.session.update({ where: { id: session.id }, data: { lastSeenAt: new Date() } }),
+    );
   }
   const roles = new Set(session.user.userRoles.map((link) => link.role.code));
   const fromRoles: string[] = [];

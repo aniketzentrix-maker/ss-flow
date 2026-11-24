@@ -5,7 +5,9 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Plus, Upload, X, FileText, Loader2 } from "lucide-react";
 import { CreatableSpecSelect } from "@/components/ui/creatable-spec-select";
+import { CustomerSearchSelect } from "@/components/leads/customer-search-select";
 import { LeadThicknessField } from "@/components/leads/lead-thickness-field";
+import { LeadWidthField } from "@/components/leads/lead-width-field";
 import { LeadDimensionMmField } from "@/components/leads/lead-dimension-mm-field";
 import { isInchConvertibleSpecKey } from "@/lib/domain/dimension-units";
 import { toast } from "@/components/toast";
@@ -131,7 +133,6 @@ type FormValues = {
   source: (typeof LEAD_SOURCES)[number];
   priority: (typeof LEAD_PRIORITIES)[number];
   assigneeId: string;
-  nextFollowUpAt: string;
   notes: string;
   items: LeadItemValues[];
   attendedById: string;
@@ -844,12 +845,38 @@ function LeadItemFields({
                   <LeadThicknessField
                     specs={selectedSpecs}
                     options={optionsFor("thickness")}
+                    widthOptions={optionsFor("width")}
                     disabled={!selectedParent}
                     canManageProducts={canManageProducts}
                     categoryId={categoryId}
                     parentProductId={parentProductId}
                     datalistId={`lead-swg-${index}`}
                     onGaugeThicknessMm={(mm) => setValue(`items.${index}.gaugeThicknessMm`, mm)}
+                    onSpecsChange={(next) => {
+                      setValue(`items.${index}.specifications`, next);
+                      syncVariantAndUom(next);
+                    }}
+                  />
+                </LeadField>
+              );
+            }
+
+            if (field.type === "select" && field.key === "width") {
+              return (
+                <LeadField
+                  key={field.key}
+                  label={field.label}
+                  detail="Follows thickness unit — Farma mm ↔ gauge"
+                >
+                  <LeadWidthField
+                    specs={selectedSpecs}
+                    options={optionsFor("width")}
+                    thicknessOptions={optionsFor("thickness")}
+                    disabled={!selectedParent}
+                    canManageProducts={canManageProducts}
+                    categoryId={categoryId}
+                    parentProductId={parentProductId}
+                    onSharedUnitChange={(mm) => setValue(`items.${index}.gaugeThicknessMm`, mm)}
                     onSpecsChange={(next) => {
                       setValue(`items.${index}.specifications`, next);
                       syncVariantAndUom(next);
@@ -991,12 +1018,42 @@ function LeadItemFields({
                   <LeadThicknessField
                     specs={selectedSpecs}
                     options={optionsFor("thickness")}
+                    widthOptions={optionsFor("width")}
                     disabled={!selectedParent}
                     canManageProducts={canManageProducts}
                     categoryId={categoryId}
                     parentProductId={parentProductId}
                     datalistId={`lead-swg-fb-${index}`}
                     onGaugeThicknessMm={(mm) => setValue(`items.${index}.gaugeThicknessMm`, mm)}
+                    onSpecsChange={(next) => {
+                      setValue(`items.${index}.specifications`, next);
+                      const matches = variants.filter((variant) =>
+                        fallbackSelectorKeys.every(
+                          (specKey) =>
+                            String(variant.specs[specKey] ?? "") === String(next[specKey] ?? ""),
+                        ),
+                      );
+                      const exact = matches.length === 1 ? matches[0] : undefined;
+                      setValue(`items.${index}.productVariantId`, exact?.id ?? "");
+                      setValue(`items.${index}.productId`, exact?.materialMasterId ?? "");
+                    }}
+                  />
+                </LeadField>
+              ) : key === "width" ? (
+                <LeadField
+                  key={key}
+                  label={specLabel(key)}
+                  detail="Follows thickness unit — Farma mm ↔ gauge"
+                >
+                  <LeadWidthField
+                    specs={selectedSpecs}
+                    options={optionsFor("width")}
+                    thicknessOptions={optionsFor("thickness")}
+                    disabled={!selectedParent}
+                    canManageProducts={canManageProducts}
+                    categoryId={categoryId}
+                    parentProductId={parentProductId}
+                    onSharedUnitChange={(mm) => setValue(`items.${index}.gaugeThicknessMm`, mm)}
                     onSpecsChange={(next) => {
                       setValue(`items.${index}.specifications`, next);
                       const matches = variants.filter((variant) =>
@@ -1057,12 +1114,34 @@ function LeadItemFields({
                     <LeadThicknessField
                       specs={selectedSpecs}
                       options={optionsFor("thickness")}
+                      widthOptions={optionsFor("width")}
                       disabled={!selectedParent}
                       canManageProducts={canManageProducts}
                       categoryId={categoryId}
                       parentProductId={parentProductId}
                       datalistId={`lead-swg-ci-${index}`}
                       onGaugeThicknessMm={(mm) => setValue(`items.${index}.gaugeThicknessMm`, mm)}
+                      onSpecsChange={(next) => setValue(`items.${index}.specifications`, next)}
+                    />
+                  </LeadField>
+                );
+              }
+              if (key === "width") {
+                return (
+                  <LeadField
+                    key={key}
+                    label={specLabel(key)}
+                    detail="Follows thickness unit — Farma mm ↔ gauge"
+                  >
+                    <LeadWidthField
+                      specs={selectedSpecs}
+                      options={optionsFor("width")}
+                      thicknessOptions={optionsFor("thickness")}
+                      disabled={!selectedParent}
+                      canManageProducts={canManageProducts}
+                      categoryId={categoryId}
+                      parentProductId={parentProductId}
+                      onSharedUnitChange={(mm) => setValue(`items.${index}.gaugeThicknessMm`, mm)}
                       onSpecsChange={(next) => setValue(`items.${index}.specifications`, next)}
                     />
                   </LeadField>
@@ -1181,7 +1260,7 @@ function LeadItemFields({
           />
         </LeadField>
         {isItemPromisedLate ? (
-          <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-700/50 dark:bg-amber-950/30 dark:text-amber-300 md:col-span-4">
+          <div className="rounded-lg border border-red-700 bg-red-600 p-3 text-sm text-white md:col-span-4">
             <span className="font-semibold">Notice:</span> Promised delivery ({itemPromisedDeliveryDate}) is later than required delivery ({itemRequiredDeliveryDate}) for this product.
           </div>
         ) : null}
@@ -1341,7 +1420,6 @@ export function LeadCreateForm({
         defaultAssigneeId && employees.some((employee) => employee.id === defaultAssigneeId)
           ? defaultAssigneeId
           : "",
-      nextFollowUpAt: "",
       notes: "",
       items: [emptyItem(defaultUom)],
       attendedById: "",
@@ -1460,7 +1538,6 @@ export function LeadCreateForm({
           orderType: deriveLeadOrderTypeFromBusinessCategories(mappedItems, categories),
           priority: values.priority,
           assigneeId: values.assigneeId || undefined,
-          nextFollowUpAt: values.nextFollowUpAt || undefined,
           notes: values.notes.trim() || undefined,
           attendedById: values.attendedById || undefined,
           result: values.result,
@@ -1526,26 +1603,15 @@ export function LeadCreateForm({
             detail={
               selectedCustomer
                 ? "autofilled — edit if needed"
-                : "new email only — if email exists, pick customer from this list"
+                : "search by name, phone, email, or company — or leave as new customer"
             }
             className="md:col-span-3"
           >
-            <select
-              className={fieldClass}
+            <CustomerSearchSelect
               value={selectedCustomerId}
-              onChange={(event) => applyCustomerSelection(event.target.value)}
-            >
-              <option value="">New customer — enter details below</option>
-              {customers.map((customer) => (
-                <option key={customer.id} value={customer.id}>
-                  {customer.code
-                    ? `${customer.code} — ${customer.name}`
-                    : customer.name}
-                  {customer.phone ? ` · ${customer.phone}` : ""}
-                  {customer.email ? ` · ${customer.email}` : ""}
-                </option>
-              ))}
-            </select>
+              onChange={applyCustomerSelection}
+              customers={customers}
+            />
           </LeadField>
           <LeadField label="Date">
             <input
@@ -1641,13 +1707,6 @@ export function LeadCreateForm({
                 </option>
               ))}
             </select>
-          </LeadField>
-          <LeadField label="Next follow-up">
-            <input
-              className={fieldClass}
-              type="datetime-local"
-              {...form.register("nextFollowUpAt")}
-            />
           </LeadField>
         </div>
         <div className="mt-4">

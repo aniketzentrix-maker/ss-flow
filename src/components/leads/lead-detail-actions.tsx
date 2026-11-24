@@ -582,7 +582,7 @@ export function LeadDetailActions({
                   />
                 </Field>
                 {isPromisedLateInReview ? (
-                  <p className="text-xs text-amber-700 dark:text-amber-300">
+                  <p className="rounded-lg border border-red-700 bg-red-600 p-3 text-sm text-white">
                     Notice: Confirmed promised date ({confirmPromisedDate}) is later than
                     customer&apos;s required date ({initialRequired}).
                   </p>

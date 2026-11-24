@@ -123,7 +123,7 @@ export function LeadEditDeliveryForm({
                   </label>
                 </div>
                 {late ? (
-                  <p className="mt-2 text-xs text-amber-800 dark:text-amber-300">
+                  <p className="mt-2 rounded-lg border border-red-700 bg-red-600 p-3 text-sm text-white">
                     Notice: Promised delivery ({row.promisedDeliveryDate}) is later than required (
                     {row.requiredDeliveryDate}).
                   </p>
