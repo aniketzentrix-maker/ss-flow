@@ -31,13 +31,14 @@ import {
 } from "@/modules/leads/repeat-order-follow-up";
 import {
   extractDesignFileIds,
+  flattenVariantSpecs,
   isProductComingSoon,
+  RATE_AMBIGUOUS_MESSAGE,
+  RATE_PENDING_MESSAGE,
+  resolveExactPricedVariant,
+  resolveProductFieldConfig,
 } from "@/lib/domain/product-spec-fields";
-import {
-  findDuplicateMatches,
-  isValidGstin,
-  leadIdentityPatch,
-} from "@/modules/leads/duplicates";
+import { isValidGstin, leadIdentityPatch } from "@/modules/leads/duplicates";
 import { normalizeLeadOrderType } from "@/modules/leads/order-type";
 import { resolveOrCreateCustomerForLead } from "@/modules/leads/resolve-customer";
 import { normalizeLeadPriority } from "@/modules/leads/status";
@@ -93,6 +94,7 @@ export type LeadItemInput = {
   unitId?: string;
   uom?: string;
   targetPrice?: string;
+  marketPrice?: string;
   thickness?: string;
   grade?: string;
   size?: string;
@@ -201,7 +203,14 @@ async function createLeadItems(tx: Tx, leadId: string, plantId: string, items: L
   const uomCache = new Map<string, { unitId: string; uom: string }>();
 
   for (const line of items) {
-    if (!line.productId && !line.itemDescription?.trim() && !line.thickness && !line.grade && !line.size) {
+    if (
+      !line.productId &&
+      !line.parentProductId &&
+      !line.itemDescription?.trim() &&
+      !line.thickness &&
+      !line.grade &&
+      !line.size
+    ) {
       throw new AppError(400, "VALIDATION", "Each line needs a product, description, or specification.");
     }
     let parentProductId = line.parentProductId;
@@ -246,19 +255,75 @@ async function createLeadItems(tx: Tx, leadId: string, plantId: string, items: L
             ),
           )
         : variantSpecs;
+      const formSpecs: Record<string, string> = {};
+      for (const [key, value] of Object.entries(line.specifications ?? {})) {
+        if (value == null || typeof value === "object") continue;
+        const text = String(value).trim();
+        if (text) formSpecs[key] = text;
+      }
+      if (line.grade?.trim()) formSpecs.grade = line.grade.trim();
+      if (line.thickness?.trim()) formSpecs.thickness = line.thickness.trim();
+
+      const config = resolveProductFieldConfig(variant.product);
+      const flatVariant = flattenVariantSpecs({
+        grade: variant.grade,
+        finish: variant.finish,
+        thicknessMm: variant.thicknessMm?.toString() ?? null,
+        widthMm: variant.widthMm?.toString() ?? null,
+        lengthMm: variant.lengthMm?.toString() ?? null,
+        diameterMm: variant.diameterMm?.toString() ?? null,
+        attributes: savedVariantSpecs,
+      });
+      const match = resolveExactPricedVariant(
+        [{ id: variant.id, materialMasterId: variant.materialMasterId, specs: flatVariant }],
+        formSpecs,
+        config,
+      );
+      if (match.status === "ambiguous") {
+        throw new AppError(409, "DUPLICATE", RATE_AMBIGUOUS_MESSAGE);
+      }
+      if (match.status !== "exact" || match.variant?.id !== variant.id) {
+        throw new AppError(400, "VALIDATION", RATE_PENDING_MESSAGE);
+      }
       line.specifications = {
         ...savedVariantSpecs,
-        grade: line.grade ?? variant.grade ?? savedVariantSpecs.grade,
-        finish: variant.finish ?? savedVariantSpecs.finish,
-        thickness: line.thickness ?? variant.thicknessMm?.toString() ?? savedVariantSpecs.thickness,
-        width: variant.widthMm?.toString() ?? savedVariantSpecs.width,
-        length: line.specifications?.length ?? variant.lengthMm?.toString() ?? savedVariantSpecs.length,
-        diameter: line.specifications?.diameter ?? variant.diameterMm?.toString() ?? savedVariantSpecs.diameter,
-        ...(line.specifications ?? {}),
+        grade: formSpecs.grade ?? variant.grade ?? savedVariantSpecs.grade,
+        finish: formSpecs.finish ?? variant.finish ?? savedVariantSpecs.finish,
+        thickness:
+          formSpecs.thickness ??
+          variant.thicknessMm?.toString() ??
+          savedVariantSpecs.thickness,
+        width: formSpecs.width ?? variant.widthMm?.toString() ?? savedVariantSpecs.width,
+        length: formSpecs.length ?? variant.lengthMm?.toString() ?? savedVariantSpecs.length,
+        diameter:
+          formSpecs.diameter ?? variant.diameterMm?.toString() ?? savedVariantSpecs.diameter,
+        ...formSpecs,
         variantDisplayName: variant.displayName ?? undefined,
       };
     } else if (parentProductId) {
-      throw new AppError(400, "VALIDATION", "Choose a valid active specification for the selected product.");
+      // Price-pending lead items are allowed: store parent + specs without a catalog rate.
+      const parent = parentById.get(parentProductId);
+      const formSpecs: Record<string, string> = {};
+      for (const [key, value] of Object.entries(line.specifications ?? {})) {
+        if (value == null || typeof value === "object") continue;
+        const text = String(value).trim();
+        if (text) formSpecs[key] = text;
+      }
+      if (line.grade?.trim()) formSpecs.grade = line.grade.trim();
+      if (line.thickness?.trim()) formSpecs.thickness = line.thickness.trim();
+      if (line.finish?.trim()) formSpecs.finish = line.finish.trim();
+      line.specifications = {
+        ...formSpecs,
+        ratePending: true,
+      };
+      if (!line.itemDescription?.trim() && parent?.name) {
+        line.itemDescription = parent.name;
+      }
+      line.productId = undefined;
+      line.productVariantId = undefined;
+      line.targetPrice = undefined;
+      line.marketPrice = undefined;
+      line.priceOffered = undefined;
     }
     const specs = {
       ...(line.specifications ?? {}),
@@ -299,6 +364,11 @@ async function createLeadItems(tx: Tx, leadId: string, plantId: string, items: L
         unitId,
         uom,
         targetPrice: line.targetPrice ?? null,
+        marketPrice: line.marketPrice
+          ? new Decimal(line.marketPrice)
+          : line.targetPrice
+            ? new Decimal(line.targetPrice)
+            : null,
         priceOffered: line.priceOffered ? new Decimal(line.priceOffered) : null,
         priceFinalised: line.priceFinalised ? new Decimal(line.priceFinalised) : null,
         estimatedWeight: line.estimatedWeight ? new Decimal(line.estimatedWeight) : null,
@@ -353,7 +423,6 @@ export async function createLeadManual(
     resultReason?: string;
     officeRemarks?: string;
     gstin?: string;
-    createAnyway?: boolean;
     orderType?: string;
     items: LeadItemInput[];
   },
@@ -385,19 +454,7 @@ export async function createLeadManual(
       if (!isValidGstin(input.gstin)) {
         throw new AppError(400, "VALIDATION", "Enter a valid 15-character GSTIN.");
       }
-      // Existing customer (dropdown): allow many leads, including same email.
-      // New customer: soft-warn on phone/GSTIN; email uniqueness is enforced when creating the customer/user.
-      if (!input.customerId) {
-        const duplicates = await findDuplicateMatches(tx, plantId, {
-          phone: input.phone,
-          gstin: input.gstin,
-        });
-        if (duplicates.length && !input.createAnyway) {
-          throw new AppError(409, "DUPLICATE_CANDIDATES", "Possible duplicate lead or customer found.", {
-            matches: duplicates,
-          });
-        }
-      }
+      // Same customer may have many leads / sales orders — no duplicate soft-block on create.
       const customerName = input.contactPerson?.trim() || input.customerName.trim();
       const customerId = await resolveOrCreateCustomerForLead(
         tx,
@@ -526,7 +583,6 @@ export async function changeLeadStatus(
       ) {
         throw new AppError(400, "VALIDATION", "Provide details when reason is Other.");
       }
-      if (lead.status === input.status) return { id: leadId, status: input.status };
       const followUpAt = parseFollowUpAt(input.nextFollowUpAt);
       try {
         assertNextFollowUpForStatus(input.status, followUpAt);
@@ -537,15 +593,20 @@ export async function changeLeadStatus(
           "Set next follow-up date/time when moving to Contacted, Follow-up, Quotation sent, or Negotiation.",
         );
       }
-      const transitionCtx = { orderType: lead.orderType };
-      try {
-        assertLeadTransition(lead.status, input.status, transitionCtx);
-      } catch (error) {
-        const message =
-          error instanceof Error && error.message.includes("CUSTOM_REQUIRED")
-            ? "Sample approval is only available for custom-order leads."
-            : `Cannot move from ${lead.status} to ${input.status}.`;
-        throw new AppError(409, "INVALID_TRANSITION", message);
+      const sameStatus = lead.status === input.status;
+      if (!sameStatus) {
+        const transitionCtx = { orderType: lead.orderType };
+        try {
+          assertLeadTransition(lead.status, input.status, transitionCtx);
+        } catch (error) {
+          const message =
+            error instanceof Error && error.message.includes("CUSTOM_REQUIRED")
+              ? "Sample approval is only available for custom-order leads."
+              : `Cannot move from ${lead.status} to ${input.status}.`;
+          throw new AppError(409, "INVALID_TRANSITION", message);
+        }
+      } else if (!followUpAt && !input.lostReasonNote?.trim() && !input.reason?.trim()) {
+        return { id: leadId, status: input.status };
       }
       const now = new Date();
       const lostCode = input.lostReasonCode?.trim().toUpperCase();
@@ -577,7 +638,7 @@ export async function changeLeadStatus(
           status: input.status,
           lastActivityAt: now,
           ...(followUpAt ? { nextFollowUpAt: followUpAt } : {}),
-          ...firstContactMetrics(lead, input.status, now),
+          ...(!sameStatus ? firstContactMetrics(lead, input.status, now) : {}),
           ...negotiationRates,
           ...(leadRequiresLostReason(input.status) && lostCode
             ? {
@@ -607,27 +668,34 @@ export async function changeLeadStatus(
       }
       const historyReason = lostCode
         ? formatLostReasonLegacyColumn(lostCode, lostNote)
-        : input.reason?.trim();
-      await recordLeadStatus(tx, leadId, session.userId, lead.status, input.status, historyReason, {
-        skipLeadUpdate: true,
-      });
+        : input.reason?.trim() || lostNote || undefined;
+      if (!sameStatus) {
+        await recordLeadStatus(tx, leadId, session.userId, lead.status, input.status, historyReason, {
+          skipLeadUpdate: true,
+        });
+      }
       await addLeadActivity(tx, {
         leadId,
         userId: session.userId,
-        activityType: "status",
-        description: `Status → ${input.status}${historyReason ? `: ${historyReason}` : ""}`,
+        activityType: sameStatus ? "follow_up" : "status",
+        description: sameStatus
+          ? `Follow-up updated${followUpAt ? ` · next ${followUpAt.toISOString()}` : ""}${historyReason ? `: ${historyReason}` : ""}`
+          : `Status → ${input.status}${historyReason ? `: ${historyReason}` : ""}`,
+        nextFollowUpAt: followUpAt,
         skipLeadUpdate: true,
       });
       return {
         id: leadId,
         status: input.status,
-        emailLead: {
-          id: lead.id,
-          plantId: lead.plantId,
-          leadNumber: lead.leadNumber,
-          customerName: lead.customerName,
-          email: lead.email,
-        },
+        emailLead: sameStatus
+          ? null
+          : {
+              id: lead.id,
+              plantId: lead.plantId,
+              leadNumber: lead.leadNumber,
+              customerName: lead.customerName,
+              email: lead.email,
+            },
       };
     },
   }).then(async (result) => {
@@ -719,10 +787,7 @@ export async function verifyLead(
   leadId: string,
   input: {
     checks: {
-      customerConfirmed: true;
-      itemsConfirmed: true;
       quantityConfirmed: true;
-      genuineRequirementConfirmed: true;
     };
     verificationNotes?: string;
   },
@@ -737,6 +802,9 @@ export async function verifyLead(
       const lead = await leadForSession(tx, leadId, session);
       if (!leadCanVerify(lead.status)) {
         throw new AppError(409, "INVALID_STATE", "Lead is not ready for verification.");
+      }
+      if (!input.checks.quantityConfirmed) {
+        throw new AppError(400, "VALIDATION", "Confirm quantity and UOM before qualifying the lead.");
       }
       const metadata = await tx.lead.updateMany({
         where: { id: leadId, status: lead.status, salesOrderId: null },

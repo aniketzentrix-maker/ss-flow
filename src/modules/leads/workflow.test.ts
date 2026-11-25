@@ -10,16 +10,11 @@ import {
   manualLeadStatusOptions,
 } from "@/modules/leads/status";
 
-test("verification requires every confirmation and keeps notes optional", () => {
-  const checks = {
-    customerConfirmed: true,
-    itemsConfirmed: true,
-    quantityConfirmed: true,
-    genuineRequirementConfirmed: true,
-  } as const;
+test("verification requires quantity & UOM confirmation and keeps notes optional", () => {
+  const checks = { quantityConfirmed: true } as const;
   assert.equal(leadVerifySchema.safeParse({ checks }).success, true);
-  assert.equal(leadVerifySchema.safeParse({ checks: { ...checks, quantityConfirmed: false } }).success, false);
-  assert.equal(leadVerifySchema.safeParse({ checks: { customerConfirmed: true } }).success, false);
+  assert.equal(leadVerifySchema.safeParse({ checks: { quantityConfirmed: false } }).success, false);
+  assert.equal(leadVerifySchema.safeParse({ checks: {} }).success, false);
 });
 
 test("verification is available before qualified or terminal states", () => {

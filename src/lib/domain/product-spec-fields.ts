@@ -11,6 +11,12 @@ export type ProductSpecField = {
   type: SpecFieldType;
   required?: boolean;
   unit?: string;
+  /**
+   * When true, this field participates in priced-variant identity.
+   * Defaults to true for non-file fields unless explicitly set false
+   * (e.g. production remarks / notes).
+   */
+  pricing?: boolean;
   /** Placeholder / helper for text and number inputs. */
   placeholder?: string;
   accept?: string;
@@ -26,6 +32,22 @@ export type ProductSpecConfig = {
   hiddenKeys: readonly string[];
   fields: readonly ProductSpecField[];
 };
+
+/** Spec keys stored as first-class ProductVariant / MaterialMaster columns. */
+export const FIRST_CLASS_VARIANT_SPEC_KEYS = [
+  "grade",
+  "finish",
+  "thickness",
+  "width",
+  "length",
+  "diameter",
+] as const;
+
+export type FirstClassVariantSpecKey = (typeof FIRST_CLASS_VARIANT_SPEC_KEYS)[number];
+
+export function isFirstClassVariantSpecKey(key: string): key is FirstClassVariantSpecKey {
+  return (FIRST_CLASS_VARIANT_SPEC_KEYS as readonly string[]).includes(key);
+}
 
 export const ALWAYS_HIDDEN_SPEC_KEYS = [
   "categoryId",
@@ -98,10 +120,18 @@ const circleConfig: ProductSpecConfig = {
   matchNames: ["circle"],
   hiddenKeys: ["edgeType"],
   fields: [
-    { key: "grade", label: "Grade", type: "select", required: true },
-    { key: "finish", label: "Finish", type: "select", required: true },
-    { key: "thickness", label: "Thickness", type: "select", required: true, unit: "mm" },
-    { key: "diameter", label: "Diameter", type: "number", required: true, unit: "mm", placeholder: "Enter value in numbers" },
+    { key: "grade", label: "Grade", type: "select", required: true, pricing: true },
+    { key: "finish", label: "Finish", type: "select", required: true, pricing: true },
+    { key: "thickness", label: "Thickness", type: "select", required: true, unit: "mm", pricing: true },
+    {
+      key: "diameter",
+      label: "Diameter",
+      type: "number",
+      required: true,
+      unit: "mm",
+      placeholder: "Enter value in numbers",
+      pricing: true,
+    },
   ],
 };
 
@@ -119,12 +149,12 @@ const farmaConfig: ProductSpecConfig = {
   matchNames: ["farma", "jug farma", "bhojanthaal farma", "custom utensil farma", "farma design"],
   hiddenKeys: ["compatibleUtensilType", "designForm", "drawingReference", "dimensions"],
   fields: [
-    { key: "grade", label: "Grade", type: "select", required: true },
-    { key: "finish", label: "Finish", type: "select", required: true },
-    { key: "thickness", label: "Thickness", type: "select", required: true, unit: "mm" },
-    { key: "length", label: "Length", type: "number", required: true, unit: "mm" },
-    { key: "breadth", label: "Breadth", type: "number", required: true, unit: "mm" },
-    { key: "productionRemarks", label: "Production Remarks", type: "select" },
+    { key: "grade", label: "Grade", type: "select", required: true, pricing: true },
+    { key: "finish", label: "Finish", type: "select", required: true, pricing: true },
+    { key: "thickness", label: "Thickness", type: "select", required: true, unit: "mm", pricing: true },
+    { key: "length", label: "Length", type: "number", required: true, unit: "mm", pricing: true },
+    { key: "breadth", label: "Breadth", type: "number", required: true, unit: "mm", pricing: true },
+    { key: "productionRemarks", label: "Production Remarks", type: "select", pricing: false },
   ],
 };
 
@@ -134,12 +164,12 @@ const laserCutFarmaConfig: ProductSpecConfig = {
   matchNames: ["laser cut farma"],
   hiddenKeys: [],
   fields: [
-    { key: "grade", label: "Grade", type: "select", required: true },
-    { key: "thickness", label: "Thickness", type: "select", required: true, unit: "mm" },
-    { key: "finish", label: "Finish", type: "select", required: true },
-    { key: "cutProfile", label: "Cut Profile", type: "text", required: true },
-    { key: "dimensions", label: "Required dimensions", type: "text", required: true },
-    { key: "designReference", label: "Design reference / drawing", type: "text", required: true },
+    { key: "grade", label: "Grade", type: "select", required: true, pricing: true },
+    { key: "thickness", label: "Thickness", type: "select", required: true, unit: "mm", pricing: true },
+    { key: "finish", label: "Finish", type: "select", required: true, pricing: true },
+    { key: "cutProfile", label: "Cut Profile", type: "text", required: true, pricing: true },
+    { key: "dimensions", label: "Required dimensions", type: "text", required: true, pricing: true },
+    { key: "designReference", label: "Design reference / drawing", type: "text", required: true, pricing: true },
   ],
 };
 
@@ -149,15 +179,16 @@ const sheetConfig: ProductSpecConfig = {
   matchNames: ["sheet", "mirror, matt & pvd sheets"],
   hiddenKeys: ["pvdColour", "dimensions"],
   fields: [
-    { key: "grade", label: "Grade", type: "select", required: true },
-    { key: "finish", label: "Finish", type: "select", required: true },
-    { key: "thickness", label: "Thickness", type: "select", required: true, unit: "mm" },
-    { key: "width", label: "Width", type: "select", required: true, unit: "mm" },
-    { key: "length", label: "Length", type: "select", required: true, unit: "mm" },
+    { key: "grade", label: "Grade", type: "select", required: true, pricing: true },
+    { key: "finish", label: "Finish", type: "select", required: true, pricing: true },
+    { key: "thickness", label: "Thickness", type: "select", required: true, unit: "mm", pricing: true },
+    { key: "width", label: "Width", type: "select", required: true, unit: "mm", pricing: true },
+    { key: "length", label: "Length", type: "select", required: true, unit: "mm", pricing: true },
     {
       key: "decorativeSubtype",
       label: "Decorative Subtype",
       type: "select",
+      pricing: true,
       showWhen: { key: "finish", match: /pvd|mirror|matt/i },
     },
   ],
@@ -169,9 +200,17 @@ const rodConfig: ProductSpecConfig = {
   matchNames: ["rod"],
   hiddenKeys: ["packing", "profile", "supplyCondition"],
   fields: [
-    { key: "grade", label: "Grade", type: "select", required: true },
-    { key: "diameter", label: "Diameter", type: "number", required: true, unit: "mm", placeholder: "Enter value in numbers" },
-    { key: "length", label: "Length", type: "number", required: true, unit: "mm" },
+    { key: "grade", label: "Grade", type: "select", required: true, pricing: true },
+    {
+      key: "diameter",
+      label: "Diameter",
+      type: "number",
+      required: true,
+      unit: "mm",
+      placeholder: "Enter value in numbers",
+      pricing: true,
+    },
+    { key: "length", label: "Length", type: "number", required: true, unit: "mm", pricing: true },
   ],
 };
 
@@ -181,10 +220,10 @@ const coilConfig: ProductSpecConfig = {
   matchNames: ["coil"],
   hiddenKeys: ["innerDiameterMm", "innerDiameter", "outerDiameterMm", "outerDiameter", "productForm"],
   fields: [
-    { key: "grade", label: "Grade", type: "select", required: true },
-    { key: "finish", label: "Finish", type: "select", required: true },
-    { key: "thickness", label: "Thickness", type: "select", required: true, unit: "mm" },
-    { key: "width", label: "Width", type: "select", required: true, unit: "mm" },
+    { key: "grade", label: "Grade", type: "select", required: true, pricing: true },
+    { key: "finish", label: "Finish", type: "select", required: true, pricing: true },
+    { key: "thickness", label: "Thickness", type: "select", required: true, unit: "mm", pricing: true },
+    { key: "width", label: "Width", type: "select", required: true, unit: "mm", pricing: true },
   ],
 };
 
@@ -194,16 +233,17 @@ const wireConfig: ProductSpecConfig = {
   matchNames: ["wire", "wire pcs"],
   hiddenKeys: ["packing"],
   fields: [
-    { key: "productForm", label: "Product Form", type: "select", required: true },
-    { key: "grade", label: "Grade", type: "select", required: true },
-    { key: "wireDiameterMm", label: "Wire diameter", type: "number", required: true, unit: "mm" },
-    { key: "finishOrCondition", label: "Finish / condition", type: "select", required: true },
+    { key: "productForm", label: "Product Form", type: "select", required: true, pricing: true },
+    { key: "grade", label: "Grade", type: "select", required: true, pricing: true },
+    { key: "wireDiameterMm", label: "Wire diameter", type: "number", required: true, unit: "mm", pricing: true },
+    { key: "finishOrCondition", label: "Finish / condition", type: "select", required: true, pricing: true },
     {
       key: "cutLengthMm",
       label: "Cut length",
       type: "number",
       required: true,
       unit: "mm",
+      pricing: true,
       showWhen: { key: "productForm", match: /cut/i },
     },
   ],
@@ -227,9 +267,9 @@ const semiFinishUtensilsConfig: ProductSpecConfig = {
   ],
   hiddenKeys: [],
   fields: [
-    { key: "grade", label: "Grade", type: "select" },
-    { key: "stageOfManufacture", label: "Stage of Manufacture", type: "select" },
-    { key: "utensilType", label: "Utensil Type", type: "select" },
+    { key: "grade", label: "Grade", type: "select", pricing: true },
+    { key: "stageOfManufacture", label: "Stage of Manufacture", type: "select", pricing: true },
+    { key: "utensilType", label: "Utensil Type", type: "select", pricing: true },
   ],
 };
 
@@ -374,10 +414,34 @@ export function isFreeEntrySpecKey(key: string, config?: ProductSpecConfig | nul
   return field.type === "number" || field.type === "text" || field.type === "file";
 }
 
+export function isPricingSpecField(field: ProductSpecField) {
+  if (field.type === "file") return false;
+  if (field.pricing === false) return false;
+  if (field.pricing === true) return true;
+  // Default: non-file fields participate unless explicitly opted out.
+  return true;
+}
+
+/** Visible pricing fields for the current conditional spec state. */
+export function pricingProductFields(config: ProductSpecConfig, specs: Record<string, string>) {
+  return visibleProductFields(config, specs).filter(isPricingSpecField);
+}
+
+export function pricingFieldKeys(config: ProductSpecConfig, specs: Record<string, string>) {
+  return pricingProductFields(config, specs).map((field) => field.key);
+}
+
+/** Descriptive / note fields that never identify a priced variant. */
+export function descriptiveProductFields(config: ProductSpecConfig, specs: Record<string, string>) {
+  return visibleProductFields(config, specs).filter((field) => !isPricingSpecField(field));
+}
+
+/**
+ * Select-only keys used for soft UOM hints. Prefer {@link pricingFieldKeys}
+ * for priced-variant identity.
+ */
 export function variantMatchKeys(config: ProductSpecConfig, specs: Record<string, string>) {
-  return visibleProductFields(config, specs)
-    .filter((field) => field.type === "select")
-    .map((field) => field.key);
+  return pricingFieldKeys(config, specs);
 }
 
 export function isPositiveDecimal(value: string) {
@@ -401,57 +465,239 @@ export function invalidNumericSpecFields(
     .map((field) => field.label);
 }
 
+export function missingPricingSpecFields(
+  config: ProductSpecConfig,
+  specs: Record<string, string>,
+) {
+  return pricingProductFields(config, specs)
+    .filter((field) => field.required)
+    .filter((field) => !String(specs[field.key] ?? "").trim())
+    .map((field) => field.label);
+}
+
+export function pricingSpecsComplete(config: ProductSpecConfig, specs: Record<string, string>) {
+  return (
+    missingRequiredSpecFields(config, specs).length === 0 &&
+    invalidNumericSpecFields(config, specs).length === 0
+  );
+}
+
+/**
+ * Normalize a pricing-spec value so 0.5 and 0.50 match, and text compares
+ * case-insensitively with collapsed whitespace.
+ */
+export function normalizePricingSpecValue(
+  key: string,
+  value: unknown,
+  config?: ProductSpecConfig | null,
+): string {
+  if (value == null || typeof value === "object") return "";
+  const raw = String(value).trim();
+  if (!raw) return "";
+  const field = config?.fields.find((item) => item.key === key);
+  const numeric =
+    field?.type === "number" ||
+    Boolean(SPEC_UNITS[key] && SPEC_UNITS[key] !== "L") ||
+    ["weightPerPiece", "netWeightKg", "capacityLitres", "breadth", "wireDiameterMm", "cutLengthMm"].includes(key);
+  if (numeric || /^-?\d+(\.\d+)?$/.test(raw)) {
+    const num = Number(raw);
+    if (Number.isFinite(num)) {
+      // Stable comparable form without trailing zeros noise.
+      return String(num);
+    }
+  }
+  return raw.replace(/\s+/g, " ").toLocaleLowerCase();
+}
+
+export function buildNormalizedPricingFingerprint(
+  specs: Record<string, unknown>,
+  keys: readonly string[],
+  config?: ProductSpecConfig | null,
+): string {
+  return keys
+    .map((key) => `${key}=${normalizePricingSpecValue(key, specs[key], config)}`)
+    .join("|");
+}
+
 type VariantLike = {
   id: string;
   materialMasterId?: string | null;
   uom?: string;
+  sellingPrice?: string | null;
   specs: Record<string, unknown>;
 };
 
-function specValue(specs: Record<string, unknown>, key: string) {
-  const value = specs[key];
-  if (value == null || typeof value === "object") return "";
-  return String(value);
+/**
+ * Keys that participate in an exact priced match for the current form state.
+ * Inactive conditional fields are excluded so stale values cannot affect matching.
+ * Optional visible pricing fields (e.g. decorativeSubtype) still participate —
+ * blank form value only matches a blank variant value.
+ */
+export function activePricingMatchKeys(
+  config: ProductSpecConfig,
+  specs: Record<string, string>,
+): string[] {
+  return pricingProductFields(config, specs).map((field) => field.key);
+}
+
+export function variantMatchesPricingSpecs(
+  variantSpecs: Record<string, unknown>,
+  formSpecs: Record<string, string>,
+  keys: readonly string[],
+  config?: ProductSpecConfig | null,
+): boolean {
+  return keys.every((key) => {
+    const wanted = normalizePricingSpecValue(key, formSpecs[key], config);
+    const actual = normalizePricingSpecValue(key, variantSpecs[key], config);
+    return actual === wanted;
+  });
+}
+
+export type ExactPricedVariantMatch<T extends VariantLike> = {
+  status: "incomplete" | "exact" | "ambiguous" | "none";
+  matches: T[];
+  variant?: T;
+};
+
+/**
+ * Exact priced-variant resolution. Unlike soft scoring, free-number pricing
+ * fields (Rod diameter, Circle diameter, Farma length/breadth, Wire diameter)
+ * must match exactly after numeric normalization.
+ */
+export function resolveExactPricedVariant<T extends VariantLike>(
+  variants: T[],
+  specs: Record<string, string>,
+  config: ProductSpecConfig | null,
+): ExactPricedVariantMatch<T> {
+  if (!config) {
+    const hidden = new Set<string>([...ALWAYS_HIDDEN_SPEC_KEYS, ...DROPPED_FORM_SPEC_KEYS]);
+    const keys = Object.keys(specs).filter(
+      (key) => !hidden.has(key) && String(specs[key] ?? "").trim(),
+    );
+    if (!keys.length) return { status: "incomplete", matches: [] };
+    const matches = variants.filter((variant) =>
+      variantMatchesPricingSpecs(variant.specs, specs, keys, null),
+    );
+    if (matches.length === 1) return { status: "exact", matches, variant: matches[0] };
+    if (matches.length > 1) return { status: "ambiguous", matches };
+    return { status: "none", matches: [] };
+  }
+
+  if (!pricingSpecsComplete(config, specs)) {
+    return { status: "incomplete", matches: [] };
+  }
+
+  const keys = activePricingMatchKeys(config, specs);
+  if (!keys.length) return { status: "incomplete", matches: [] };
+
+  const matches = variants.filter((variant) =>
+    variantMatchesPricingSpecs(variant.specs, specs, keys, config),
+  );
+  if (matches.length === 1) return { status: "exact", matches, variant: matches[0] };
+  if (matches.length > 1) return { status: "ambiguous", matches };
+  return { status: "none", matches: [] };
 }
 
 /**
- * Pick a catalog variant for UOM / material linking without requiring an exact
- * saved combination. Free numeric values and newly added select options never
- * disqualify a variant; they only affect the match score.
+ * @deprecated Prefer {@link resolveExactPricedVariant}. Kept for call sites that
+ * only need a single exact match (returns undefined when incomplete / none / ambiguous).
+ */
+export function findExactPricedVariantForSpecs<T extends VariantLike>(
+  variants: T[],
+  specs: Record<string, string>,
+  config: ProductSpecConfig | null,
+): T | undefined {
+  const result = resolveExactPricedVariant(variants, specs, config);
+  return result.status === "exact" ? result.variant : undefined;
+}
+
+/**
+ * Exact priced match only. Soft / best-effort scoring was removed so catalog
+ * rates never attach to a non-matching specification combination.
  */
 export function findBestVariantForSpecs<T extends VariantLike>(
   variants: T[],
   specs: Record<string, string>,
   config: ProductSpecConfig | null,
 ): T | undefined {
-  if (!variants.length) return undefined;
-  if (!config) {
-    const keys = Object.keys(specs).filter((key) => key !== "diameter" && !isFreeEntrySpecKey(key, null));
-    const exact = variants.filter((variant) =>
-      keys.every((key) => !specs[key] || specValue(variant.specs, key) === specs[key]),
-    );
-    return exact[0] ?? variants[0];
-  }
-  const keys = variantMatchKeys(config, specs);
-  let best: T | undefined;
-  let bestScore = -1;
-  for (const variant of variants) {
-    let score = 0;
-    for (const key of keys) {
-      const rawWanted = specs[key];
-      const wanted = (typeof rawWanted === "string" ? rawWanted : String(rawWanted ?? "")).trim();
-      if (!wanted) continue;
-      const actual = specValue(variant.specs, key);
-      if (actual === wanted) score += 3;
-      else if (!actual) score += 0;
-      else score += 0;
-    }
-    if (score > bestScore) {
-      best = variant;
-      bestScore = score;
-    }
-  }
-  return best ?? variants[0];
+  return findExactPricedVariantForSpecs(variants, specs, config);
+}
+
+/** Build a flat specs map from first-class columns + attributes JSON. */
+export function flattenVariantSpecs(input: {
+  grade?: string | null;
+  finish?: string | null;
+  thicknessMm?: string | number | null;
+  widthMm?: string | number | null;
+  lengthMm?: string | number | null;
+  diameterMm?: string | number | null;
+  attributes?: Record<string, unknown> | null;
+  materialSpecs?: Record<string, unknown> | null;
+}): Record<string, unknown> {
+  const attrs =
+    input.attributes && typeof input.attributes === "object" && !Array.isArray(input.attributes)
+      ? input.attributes
+      : {};
+  const saved =
+    input.materialSpecs && typeof input.materialSpecs === "object" && !Array.isArray(input.materialSpecs)
+      ? input.materialSpecs
+      : {};
+  return {
+    ...Object.fromEntries(Object.entries(saved).filter(([key]) => key !== "seedMetadata")),
+    ...Object.fromEntries(Object.entries(attrs).filter(([key]) => key !== "seedMetadata")),
+    grade: input.grade ?? attrs.grade ?? saved.grade,
+    finish: input.finish ?? attrs.finish ?? saved.finish,
+    thickness:
+      input.thicknessMm != null && input.thicknessMm !== ""
+        ? String(input.thicknessMm)
+        : (attrs.thickness ?? saved.thickness),
+    width:
+      input.widthMm != null && input.widthMm !== ""
+        ? String(input.widthMm)
+        : (attrs.width ?? saved.width),
+    length:
+      input.lengthMm != null && input.lengthMm !== ""
+        ? String(input.lengthMm)
+        : (attrs.length ?? saved.length),
+    diameter:
+      input.diameterMm != null && input.diameterMm !== ""
+        ? String(input.diameterMm)
+        : (attrs.diameter ?? saved.diameter),
+  };
+}
+
+export const RATE_PENDING_MESSAGE = "Is specification ka rate set karna baaki hai";
+export const RATE_AMBIGUOUS_MESSAGE =
+  "Multiple priced variants match these specifications. Fix duplicates in Product Master.";
+
+/** Save & Apply Rate — master rate differs from submitted rate. */
+export const RATE_CONFLICT_CODE = "RATE_CONFLICT";
+export const RATE_CONFLICT_MESSAGE =
+  "Product Master already has a different rate for this specification. Apply the existing rate or keep the master rate.";
+
+/** Save & Apply Rate — lead/form pricing spec changed while the editor was open. */
+export const STALE_SPECIFICATION_CODE = "STALE_SPECIFICATION";
+export const STALE_SPECIFICATION_MESSAGE =
+  "Specification changed while the rate editor was open. Review the updated specification and try again.";
+
+function catalogRatesEqual(a: string | null | undefined, b: string) {
+  const left = a != null && String(a).trim() !== "" ? Number(a) : NaN;
+  const right = Number(b);
+  if (!Number.isFinite(left) || !Number.isFinite(right)) return false;
+  return Math.abs(left - right) < 0.000_001;
+}
+
+/** Pure decision helper for concurrent/existing Product Master rate reuse. */
+export function decideCatalogRateReuse(options: {
+  existingRate: string | null;
+  submittedRate: string;
+  applyExistingRate?: boolean;
+}): "reuse" | "conflict" | "fill_blank" {
+  const { existingRate, submittedRate, applyExistingRate } = options;
+  if (existingRate == null || existingRate === "") return "fill_blank";
+  if (catalogRatesEqual(existingRate, submittedRate)) return "reuse";
+  if (applyExistingRate) return "reuse";
+  return "conflict";
 }
 
 export function designFileExtension(name: string) {

@@ -2,7 +2,7 @@ import { prisma } from "@/db";
 import { findDuplicateMatches } from "@/modules/leads/duplicates";
 import { LEAD_STALE_WARNING_DAYS, staleThresholdDate } from "@/modules/leads/follow-up";
 import { BUSINESS_ROOTS } from "@/lib/domain/business-categories";
-import { MERGED_PRODUCT_SKUS } from "@/lib/domain/product-spec-fields";
+import { flattenVariantSpecs, MERGED_PRODUCT_SKUS } from "@/lib/domain/product-spec-fields";
 
 export async function leadProductCatalog(plantIds: string[]) {
   const primaryPlantId = plantIds[0];
@@ -91,6 +91,7 @@ export async function leadProductCatalog(plantIds: string[]) {
               length: true,
               diameter: true,
               weightPerPiece: true,
+              sellingPrice: true,
             },
           },
         },
@@ -194,6 +195,19 @@ export async function leadProductCatalog(plantIds: string[]) {
             materialMaster?.specs && typeof materialMaster.specs === "object" && !Array.isArray(materialMaster.specs)
               ? (materialMaster.specs as Record<string, unknown>)
               : {};
+          const specs = flattenVariantSpecs({
+            grade: variant.grade ?? materialMaster?.grade,
+            finish: variant.finish,
+            thicknessMm: variant.thicknessMm?.toString() ?? materialMaster?.thickness?.toString() ?? null,
+            widthMm: variant.widthMm?.toString() ?? materialMaster?.width?.toString() ?? null,
+            lengthMm: variant.lengthMm?.toString() ?? materialMaster?.length?.toString() ?? null,
+            diameterMm: variant.diameterMm?.toString() ?? materialMaster?.diameter?.toString() ?? null,
+            attributes,
+            materialSpecs: saved,
+          });
+          if (materialMaster?.weightPerPiece != null) {
+            specs.weightPerPiece = materialMaster.weightPerPiece.toString();
+          }
           return {
             id: variant.id,
             materialMasterId: materialMaster?.id ?? variant.id,
@@ -211,27 +225,8 @@ export async function leadProductCatalog(plantIds: string[]) {
                 .filter(Boolean)
                 .join(" · "),
             uom: variant.unit?.isActive ? variant.unit.symbol : materialMaster?.salesUom ?? materialMaster?.uom ?? "PCS",
-            specs: {
-              ...Object.fromEntries(Object.entries(saved).filter(([key]) => key !== "seedMetadata")),
-              ...Object.fromEntries(Object.entries(attributes).filter(([key]) => key !== "seedMetadata")),
-              grade: variant.grade ?? materialMaster?.grade ?? attributes.grade ?? saved.grade,
-              finish: variant.finish ?? attributes.finish ?? saved.finish,
-              thickness:
-                variant.thicknessMm?.toString() ??
-                materialMaster?.thickness?.toString() ??
-                attributes.thickness ??
-                saved.thickness,
-              width: variant.widthMm?.toString() ?? materialMaster?.width?.toString() ?? attributes.width ?? saved.width,
-              length:
-                variant.lengthMm?.toString() ?? materialMaster?.length?.toString() ?? attributes.length ?? saved.length,
-              diameter:
-                variant.diameterMm?.toString() ??
-                materialMaster?.diameter?.toString() ??
-                attributes.diameter ??
-                saved.diameter,
-              weightPerPiece:
-                materialMaster?.weightPerPiece?.toString() ?? attributes.weightPerPiece ?? saved.weightPerPiece,
-            },
+            sellingPrice: materialMaster?.sellingPrice?.toString() ?? "",
+            specs,
           };
         }),
       };

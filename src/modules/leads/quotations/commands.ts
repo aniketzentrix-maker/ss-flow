@@ -32,6 +32,10 @@ import {
   buildLeadItemLineDescription,
   buildLeadItemSizeColumn,
 } from "@/modules/leads/quotations/line-description";
+import {
+  assertLeadItemsPricedForFinalQuotation,
+  leadItemHasSavedQuotationRate,
+} from "@/modules/leads/quotations/pending-rates";
 import { normalizeProductGst } from "@/lib/domain/gst";
 
 type Tx = Prisma.TransactionClient;
@@ -142,18 +146,20 @@ async function syncLeadItemPricesFromQuotationItems(
 function linesFromLeadItems(
   items: Awaited<ReturnType<typeof loadLeadForQuote>>["items"],
 ): QuotationLineWrite[] {
-  return items.map((item) => {
-    const specs = parseSpecs(item.specifications);
+  // Use the lead's saved applied rate only. Never re-read live MaterialMaster.sellingPrice
+  // so a later Product Master price change cannot rewrite an older lead quotation.
+  // Callers that build a final quotation from lead items must assert pending rates first.
+  return items.flatMap((item) => {
+    if (!leadItemHasSavedQuotationRate(item)) return [];
     const list =
-      item.marketPrice?.toString() ??
-      item.product?.sellingPrice?.toString() ??
-      item.targetPrice?.toString() ??
-      "0";
+      item.marketPrice?.toString()?.trim() ||
+      item.targetPrice?.toString()?.trim() ||
+      "";
     const rate =
-      item.priceOffered?.toString() ??
-      item.targetPrice?.toString() ??
-      item.product?.sellingPrice?.toString() ??
-      "0";
+      item.priceOffered?.toString()?.trim() ||
+      item.targetPrice?.toString()?.trim() ||
+      item.marketPrice?.toString()?.trim() ||
+      "";
     const lineSource = {
       itemDescription: item.itemDescription,
       specifications: item.specifications,
@@ -172,20 +178,22 @@ function linesFromLeadItems(
         : item.product?.taxRate != null
           ? normalizeProductGst(item.product.taxRate.toString())
           : "18";
-    return {
-      leadItemId: item.id,
-      productId: item.productId ?? undefined,
-      description: buildLeadItemLineDescription(lineSource),
-      grade: gradeCol === "—" ? undefined : gradeCol,
-      size: sizeCol === "—" ? undefined : sizeCol,
-      qty: item.quantity.toString(),
-      uom: item.uom,
-      listRate: list,
-      rate,
-      pricingBasis: item.pricingBasis ?? undefined,
-      gstPercent: gstFromProduct,
-      expectedDeliveryDate: dateOnlyIso(item.expectedDeliveryDate),
-    };
+    return [
+      {
+        leadItemId: item.id,
+        productId: item.productId ?? undefined,
+        description: buildLeadItemLineDescription(lineSource),
+        grade: gradeCol === "—" ? undefined : gradeCol,
+        size: sizeCol === "—" ? undefined : sizeCol,
+        qty: item.quantity.toString(),
+        uom: item.uom,
+        listRate: list,
+        rate,
+        pricingBasis: item.pricingBasis ?? undefined,
+        gstPercent: gstFromProduct,
+        expectedDeliveryDate: dateOnlyIso(item.expectedDeliveryDate),
+      },
+    ];
   });
 }
 
@@ -400,6 +408,12 @@ export async function createQuotationDraft(
       let version = 1;
       let groupId = uuidv7();
       let parentQuotationId: string | null = null;
+      const sourcingFromLeadItems = !input.items?.length && !input.fromQuotationId;
+      // Final quotation from lead: block entirely when any line is rate-pending.
+      // Do this before writing quotation header/lines. Draft-lead saves stay untouched.
+      if (sourcingFromLeadItems) {
+        assertLeadItemsPricedForFinalQuotation(lead.items);
+      }
       let lines = input.items && input.items.length > 0 ? input.items : linesFromLeadItems(lead.items);
 
       if (input.fromQuotationId) {

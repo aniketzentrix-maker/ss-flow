@@ -161,7 +161,7 @@ export function LeadWidthField({
           />
           {gaugeFromMm != null ? (
             <p className="text-xs text-muted">
-              Chart gauge:{" "}
+              Gauge{" "}
               <span className="font-semibold text-foreground">{gaugeLabel(gaugeFromMm)}</span>
             </p>
           ) : null}
@@ -202,17 +202,9 @@ export function LeadWidthField({
           </div>
           {convertedFromGauge != null ? (
             <p className="text-xs text-muted">
-              Converted:{" "}
               <span className="font-semibold text-foreground">
                 {formatThicknessMm(convertedFromGauge)} mm
               </span>
-              {specs.width && specs.width !== formatThicknessMm(convertedFromGauge)
-                ? ` · variant match ${specs.width} mm`
-                : null}
-            </p>
-          ) : gaugeRaw.trim() ? (
-            <p className="text-xs text-amber-700 dark:text-amber-200">
-              Enter a Farma chart gauge (8–30). Missing odd sizes like 17 / 15 are not on the sheet.
             </p>
           ) : null}
         </div>

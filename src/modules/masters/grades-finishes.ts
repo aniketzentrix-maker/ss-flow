@@ -189,40 +189,40 @@ export async function listAllFinishes(options?: {
   }));
 }
 
-/**
- * Create or reuse a Grade Master record and associate compatibility with the product.
- */
-export async function createOrReuseGrade(
-  session: SessionUser,
-  input: {
-    plantId?: string;
-    productId?: string;
-    name: string;
-    description?: string;
-  },
-) {
-  allow(session, "plant.manage");
-  const rawName = input.name?.trim();
-  if (!rawName || rawName.length < 1 || rawName.length > 80) {
-    throw new AppError(400, "VALIDATION", "Grade name is required (1-80 characters).");
-  }
+type MasterTx = Prisma.TransactionClient;
 
-  const plantId = input.plantId || primaryPlant(session);
+export type CreateOrReuseGradeInput = {
+  plantId?: string;
+  productId?: string;
+  name: string;
+  description?: string;
+};
+
+async function createOrReuseGradeInTx(
+  tx: MasterTx,
+  session: SessionUser,
+  input: CreateOrReuseGradeInput,
+  plantId: string,
+) {
+  const rawName = input.name.trim();
   const normalized = normalizeMasterName(rawName);
 
-  return prisma.$transaction(async (tx) => {
-    // 1. Check if normalized grade exists in plant
-    let grade = await tx.gradeMaster.findUnique({
-      where: { plantId_normalizedName: { plantId, normalizedName: normalized } },
-    });
+  let grade = await tx.gradeMaster.findUnique({
+    where: { plantId_normalizedName: { plantId, normalizedName: normalized } },
+  });
 
-    let reused = false;
-    if (grade) {
-      reused = true;
-      if (!grade.isActive) {
-        throw new AppError(400, "INACTIVE_GRADE", `Grade "${grade.name}" is currently inactive. Please activate it in Grade Master before using.`);
-      }
-    } else {
+  let reused = false;
+  if (grade) {
+    reused = true;
+    if (!grade.isActive) {
+      throw new AppError(
+        400,
+        "INACTIVE_GRADE",
+        `Grade "${grade.name}" is currently inactive. Please activate it in Grade Master before using.`,
+      );
+    }
+  } else {
+    try {
       grade = await tx.gradeMaster.create({
         data: {
           id: uuidv7(),
@@ -241,19 +241,38 @@ export async function createOrReuseGrade(
         resourceId: grade.id,
         payload: { name: rawName, normalizedName: normalized },
       });
+    } catch (error) {
+      // Concurrent create of the same normalized name — reuse the winner.
+      if (error instanceof Error && "code" in error && (error as { code?: string }).code === "P2002") {
+        grade = await tx.gradeMaster.findUnique({
+          where: { plantId_normalizedName: { plantId, normalizedName: normalized } },
+        });
+        if (!grade) throw error;
+        reused = true;
+        if (!grade.isActive) {
+          throw new AppError(
+            400,
+            "INACTIVE_GRADE",
+            `Grade "${grade.name}" is currently inactive. Please activate it in Grade Master before using.`,
+          );
+        }
+      } else {
+        throw error;
+      }
     }
+  }
 
-    // 2. Associate compatibility with product if productId provided
-    let createdCompatibility = false;
-    if (input.productId) {
-      const product = await tx.product.findUnique({ where: { id: input.productId } });
-      if (!product) throw new AppError(404, "NOT_FOUND", "Parent product not found.");
+  let createdCompatibility = false;
+  if (input.productId) {
+    const product = await tx.product.findUnique({ where: { id: input.productId } });
+    if (!product) throw new AppError(404, "NOT_FOUND", "Parent product not found.");
 
-      const existingCompat = await tx.productGradeCompatibility.findUnique({
-        where: { productId_gradeId: { productId: input.productId, gradeId: grade.id } },
-      });
+    const existingCompat = await tx.productGradeCompatibility.findUnique({
+      where: { productId_gradeId: { productId: input.productId, gradeId: grade.id } },
+    });
 
-      if (!existingCompat) {
+    if (!existingCompat) {
+      try {
         await tx.productGradeCompatibility.create({
           data: {
             id: uuidv7(),
@@ -264,63 +283,89 @@ export async function createOrReuseGrade(
           },
         });
         createdCompatibility = true;
-      } else if (!existingCompat.isActive) {
-        await tx.productGradeCompatibility.update({
-          where: { id: existingCompat.id },
-          data: { isActive: true },
-        });
-        createdCompatibility = true;
+      } catch (error) {
+        if (!(error instanceof Error && "code" in error && (error as { code?: string }).code === "P2002")) {
+          throw error;
+        }
       }
+    } else if (!existingCompat.isActive) {
+      await tx.productGradeCompatibility.update({
+        where: { id: existingCompat.id },
+        data: { isActive: true },
+      });
+      createdCompatibility = true;
     }
+  }
 
-    return {
-      grade: {
-        id: grade.id,
-        name: grade.name,
-        normalizedName: grade.normalizedName,
-        description: grade.description,
-        isActive: grade.isActive,
-      },
-      reused,
-      createdCompatibility,
-    };
-  });
+  return {
+    grade: {
+      id: grade.id,
+      name: grade.name,
+      normalizedName: grade.normalizedName,
+      description: grade.description,
+      isActive: grade.isActive,
+    },
+    reused,
+    createdCompatibility,
+  };
+}
+
+/**
+ * Create or reuse a Grade Master record and associate compatibility with the product.
+ */
+export async function createOrReuseGrade(
+  session: SessionUser,
+  input: CreateOrReuseGradeInput,
+  tx?: MasterTx,
+) {
+  allow(session, "plant.manage");
+  const rawName = input.name?.trim();
+  if (!rawName || rawName.length < 1 || rawName.length > 80) {
+    throw new AppError(400, "VALIDATION", "Grade name is required (1-80 characters).");
+  }
+
+  const plantId = input.plantId || primaryPlant(session);
+  if (tx) return createOrReuseGradeInTx(tx, session, { ...input, name: rawName }, plantId);
+  return prisma.$transaction((inner) =>
+    createOrReuseGradeInTx(inner, session, { ...input, name: rawName }, plantId),
+  );
 }
 
 /**
  * Create or reuse a Finish Master record and associate compatibility with the product.
  */
-export async function createOrReuseFinish(
-  session: SessionUser,
-  input: {
-    plantId?: string;
-    productId?: string;
-    name: string;
-    description?: string;
-  },
-) {
-  allow(session, "plant.manage");
-  const rawName = input.name?.trim();
-  if (!rawName || rawName.length < 1 || rawName.length > 80) {
-    throw new AppError(400, "VALIDATION", "Finish name is required (1-80 characters).");
-  }
+export type CreateOrReuseFinishInput = {
+  plantId?: string;
+  productId?: string;
+  name: string;
+  description?: string;
+};
 
-  const plantId = input.plantId || primaryPlant(session);
+async function createOrReuseFinishInTx(
+  tx: MasterTx,
+  session: SessionUser,
+  input: CreateOrReuseFinishInput,
+  plantId: string,
+) {
+  const rawName = input.name.trim();
   const normalized = normalizeMasterName(rawName);
 
-  return prisma.$transaction(async (tx) => {
-    // 1. Check if normalized finish exists in plant
-    let finish = await tx.finishMaster.findUnique({
-      where: { plantId_normalizedName: { plantId, normalizedName: normalized } },
-    });
+  let finish = await tx.finishMaster.findUnique({
+    where: { plantId_normalizedName: { plantId, normalizedName: normalized } },
+  });
 
-    let reused = false;
-    if (finish) {
-      reused = true;
-      if (!finish.isActive) {
-        throw new AppError(400, "INACTIVE_FINISH", `Finish "${finish.name}" is currently inactive. Please activate it in Finish Master before using.`);
-      }
-    } else {
+  let reused = false;
+  if (finish) {
+    reused = true;
+    if (!finish.isActive) {
+      throw new AppError(
+        400,
+        "INACTIVE_FINISH",
+        `Finish "${finish.name}" is currently inactive. Please activate it in Finish Master before using.`,
+      );
+    }
+  } else {
+    try {
       finish = await tx.finishMaster.create({
         data: {
           id: uuidv7(),
@@ -339,19 +384,37 @@ export async function createOrReuseFinish(
         resourceId: finish.id,
         payload: { name: rawName, normalizedName: normalized },
       });
+    } catch (error) {
+      if (error instanceof Error && "code" in error && (error as { code?: string }).code === "P2002") {
+        finish = await tx.finishMaster.findUnique({
+          where: { plantId_normalizedName: { plantId, normalizedName: normalized } },
+        });
+        if (!finish) throw error;
+        reused = true;
+        if (!finish.isActive) {
+          throw new AppError(
+            400,
+            "INACTIVE_FINISH",
+            `Finish "${finish.name}" is currently inactive. Please activate it in Finish Master before using.`,
+          );
+        }
+      } else {
+        throw error;
+      }
     }
+  }
 
-    // 2. Associate compatibility with product if productId provided
-    let createdCompatibility = false;
-    if (input.productId) {
-      const product = await tx.product.findUnique({ where: { id: input.productId } });
-      if (!product) throw new AppError(404, "NOT_FOUND", "Parent product not found.");
+  let createdCompatibility = false;
+  if (input.productId) {
+    const product = await tx.product.findUnique({ where: { id: input.productId } });
+    if (!product) throw new AppError(404, "NOT_FOUND", "Parent product not found.");
 
-      const existingCompat = await tx.productFinishCompatibility.findUnique({
-        where: { productId_finishId: { productId: input.productId, finishId: finish.id } },
-      });
+    const existingCompat = await tx.productFinishCompatibility.findUnique({
+      where: { productId_finishId: { productId: input.productId, finishId: finish.id } },
+    });
 
-      if (!existingCompat) {
+    if (!existingCompat) {
+      try {
         await tx.productFinishCompatibility.create({
           data: {
             id: uuidv7(),
@@ -362,27 +425,52 @@ export async function createOrReuseFinish(
           },
         });
         createdCompatibility = true;
-      } else if (!existingCompat.isActive) {
-        await tx.productFinishCompatibility.update({
-          where: { id: existingCompat.id },
-          data: { isActive: true },
-        });
-        createdCompatibility = true;
+      } catch (error) {
+        if (!(error instanceof Error && "code" in error && (error as { code?: string }).code === "P2002")) {
+          throw error;
+        }
       }
+    } else if (!existingCompat.isActive) {
+      await tx.productFinishCompatibility.update({
+        where: { id: existingCompat.id },
+        data: { isActive: true },
+      });
+      createdCompatibility = true;
     }
+  }
 
-    return {
-      finish: {
-        id: finish.id,
-        name: finish.name,
-        normalizedName: finish.normalizedName,
-        description: finish.description,
-        isActive: finish.isActive,
-      },
-      reused,
-      createdCompatibility,
-    };
-  });
+  return {
+    finish: {
+      id: finish.id,
+      name: finish.name,
+      normalizedName: finish.normalizedName,
+      description: finish.description,
+      isActive: finish.isActive,
+    },
+    reused,
+    createdCompatibility,
+  };
+}
+
+/**
+ * Create or reuse a Finish Master record and associate compatibility with the product.
+ */
+export async function createOrReuseFinish(
+  session: SessionUser,
+  input: CreateOrReuseFinishInput,
+  tx?: MasterTx,
+) {
+  allow(session, "plant.manage");
+  const rawName = input.name?.trim();
+  if (!rawName || rawName.length < 1 || rawName.length > 80) {
+    throw new AppError(400, "VALIDATION", "Finish name is required (1-80 characters).");
+  }
+
+  const plantId = input.plantId || primaryPlant(session);
+  if (tx) return createOrReuseFinishInTx(tx, session, { ...input, name: rawName }, plantId);
+  return prisma.$transaction((inner) =>
+    createOrReuseFinishInTx(inner, session, { ...input, name: rawName }, plantId),
+  );
 }
 
 /**

@@ -12,6 +12,11 @@ import {
   quotationWasSentToCustomer,
 } from "@/modules/leads/quotations/document-url";
 import { quotationStatusLabel } from "@/modules/leads/quotations/status";
+import {
+  QUOTATION_RATES_PENDING_CODE,
+  QUOTATION_RATES_PENDING_MESSAGE,
+  type PendingQuotationRateItem,
+} from "@/modules/leads/quotations/pending-rates";
 
 type QuotationSummary = {
   id: string;
@@ -29,6 +34,20 @@ type QuotationSummary = {
   createdAt: string;
   itemCount: number;
 };
+
+function pendingItemsFromDetails(details: unknown): PendingQuotationRateItem[] {
+  if (!details || typeof details !== "object") return [];
+  const pending = (details as { pendingItems?: unknown }).pendingItems;
+  if (!Array.isArray(pending)) return [];
+  return pending.filter((row): row is PendingQuotationRateItem => {
+    return (
+      !!row &&
+      typeof row === "object" &&
+      typeof (row as PendingQuotationRateItem).leadItemId === "string" &&
+      typeof (row as PendingQuotationRateItem).label === "string"
+    );
+  });
+}
 
 const actionLinkClass =
   "inline-flex h-11 shrink-0 items-center justify-center rounded-[10px] border border-border bg-card px-4 text-sm font-medium text-foreground transition hover:bg-accent-soft hover:border-accent/30";
@@ -108,6 +127,11 @@ export function LeadQuotationsPanel({
     if (data) void load();
   }
 
+  const pendingRateItems =
+    createPost.errorCode === QUOTATION_RATES_PENDING_CODE
+      ? pendingItemsFromDetails(createPost.errorDetails)
+      : [];
+
   async function runAction(action: "send" | "revise" | "approve", id: string) {
     const body = action === "send" ? { sentVia } : undefined;
     const data = await actionPost.post<{ id?: string }>(`/api/v1/quotations/${id}/${action}`, body, {
@@ -128,12 +152,14 @@ export function LeadQuotationsPanel({
         <div className="min-w-0">
           <h2 className="text-[12px] font-bold text-[var(--detail-text)]">Quotations</h2>
           <p className="mt-0.5 text-[11px] text-[var(--detail-muted)]">
-            Set market &amp; offer price per lead item, save on the lead, then send PDF to the customer.
+            {canManage
+              ? "Set market & offer price per lead item, save on the lead, then send PDF to the customer."
+              : "Quotation history for this lead (view / download)."}
           </p>
         </div>
         {canManage ? (
           <Button type="button" pending={createPost.pending} onClick={() => void createDraft()}>
-            New draft from lead items
+            Generate final quotation
           </Button>
         ) : null}
       </div>
@@ -141,6 +167,22 @@ export function LeadQuotationsPanel({
       <div className="p-4">
         {loading ? <p className="text-sm text-muted">Loading quotations…</p> : null}
         {error ? <p className="text-sm text-danger">{error}</p> : null}
+        {pendingRateItems.length ? (
+          <div
+            className="mb-4 rounded-[10px] border border-amber-300/70 bg-amber-50 px-3 py-3 text-sm text-amber-950 dark:border-amber-700/50 dark:bg-amber-950/30 dark:text-amber-100"
+            role="alert"
+          >
+            <p className="font-semibold">{QUOTATION_RATES_PENDING_MESSAGE}</p>
+            <ul className="mt-2 list-none space-y-1">
+              {pendingRateItems.map((row) => (
+                <li key={row.leadItemId}>• {row.label}</li>
+              ))}
+            </ul>
+            <p className="mt-2 text-xs opacity-90">
+              Lead mein pending rates save karke yahan se dobara generate karein.
+            </p>
+          </div>
+        ) : null}
 
         {!loading && !rows.length ? (
           <p className="text-sm text-muted">No quotations yet. Create a draft to prepare a quote.</p>
@@ -269,7 +311,15 @@ export function LeadQuotationsPanel({
                     </div>
                   ) : null}
 
-                  <FormFeedback error={actionPost.error || createPost.error} success={actionPost.success || createPost.success} />
+                  <FormFeedback
+                    error={
+                      actionPost.error ||
+                      (createPost.errorCode === QUOTATION_RATES_PENDING_CODE
+                        ? null
+                        : createPost.error)
+                    }
+                    success={actionPost.success || createPost.success}
+                  />
 
                   {selected.status === "DRAFT" ? (
                     <QuotationDraftEditor

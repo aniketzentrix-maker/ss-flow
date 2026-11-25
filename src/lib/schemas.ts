@@ -232,11 +232,12 @@ export const dispatchSchema = z.object({
   salesOrderItemId: z.string().uuid().optional(),
 });
 
-const optionalRate = z
-  .string()
-  .regex(/^\d+(\.\d{1,2})?$/)
-  .optional()
-  .or(z.literal(""));
+const optionalRate = z.preprocess((value) => {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "string") return value.trim();
+  return value;
+}, z.union([z.literal(""), z.string().regex(/^\d+(\.\d{1,2})?$/)]).optional());
 const optionalPct = z
   .string()
   .regex(/^\d+(\.\d{1,4})?$/)
@@ -430,6 +431,8 @@ export const productVariantSchema = z.object({
   length: z.string().max(24).optional(),
   diameter: z.string().max(24).optional(),
   uom: z.string().max(12).optional(),
+  /** List / selling rate for this specification combination (MaterialMaster.sellingPrice). */
+  sellingPrice: optionalRate,
   attributes: z.record(z.string(), z.unknown()).optional(),
   isActive: z.boolean().optional(),
 }).superRefine((variant, context) => {
@@ -785,6 +788,8 @@ export const leadItemSchema = z.object({
   unitId: optionalUuid,
   uom: z.string().max(12).optional(),
   targetPrice: z.string().optional(),
+  marketPrice: z.string().optional(),
+  priceOffered: z.string().optional(),
   thickness: z.string().max(80).optional(),
   grade: z.string().max(80).optional(),
   size: z.string().max(80).optional(),
@@ -821,7 +826,6 @@ export const leadCreateSchema = z.object({
   source: leadSourceSchema,
   priority: z.enum(["HOT", "WARM", "COLD", "low", "normal", "high", "urgent"]).optional(),
   gstin: gstinSchema,
-  createAnyway: z.boolean().optional(),
   assigneeId: optionalUuid,
   nextFollowUpAt: z.string().optional(),
   notes: z.string().max(2000).optional(),
@@ -894,10 +898,7 @@ export const leadAssignSchema = z.object({
 
 export const leadVerifySchema = z.object({
   checks: z.object({
-    customerConfirmed: z.literal(true),
-    itemsConfirmed: z.literal(true),
     quantityConfirmed: z.literal(true),
-    genuineRequirementConfirmed: z.literal(true),
   }),
   verificationNotes: z.string().max(2000).optional(),
 });
@@ -1093,6 +1094,21 @@ export const specOptionUpdateSchema = z.object({
   unit: z.string().trim().max(20).nullish(),
   description: z.string().trim().max(500).nullish(),
   isActive: z.boolean().optional(),
+});
+
+export const applyCatalogRateSchema = z.object({
+  productId: z.string().uuid(),
+  specifications: z.record(z.string(), z.string().max(120)),
+  unitRate: z
+    .string()
+    .trim()
+    .regex(/^\d+(\.\d{1,4})?$/, "Enter a valid unit rate"),
+  uom: z.string().max(12).optional(),
+  expectedPricingFingerprint: z.string().trim().min(1).max(2000),
+  leadId: z.string().uuid().optional(),
+  leadItemId: z.string().uuid().optional(),
+  applyExistingRate: z.boolean().optional(),
+  quantity: z.string().optional(),
 });
 
 

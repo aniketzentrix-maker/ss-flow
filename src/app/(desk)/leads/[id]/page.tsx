@@ -20,7 +20,6 @@ import { ALWAYS_HIDDEN_SPEC_KEYS } from "@/lib/domain/product-spec-fields";
 import { labelFor, when } from "@/lib/format";
 import { LeadStaleBadge } from "@/components/leads/lead-follow-up-badges";
 import { isFollowUpOverdue, leadStaleLevel } from "@/modules/leads/follow-up";
-import { LeadPossibleDuplicates } from "@/components/leads/lead-possible-duplicates";
 import { LeadQuotationsPanel } from "@/components/leads/lead-quotations-panel";
 import { LeadSentQuotationDownloads } from "@/components/leads/lead-sent-quotation-downloads";
 import { SpecConversionCell } from "@/components/leads/spec-conversion-cell";
@@ -35,7 +34,7 @@ import { leadOrderTypeLabel } from "@/modules/leads/order-type";
 import { lostReasonLabel } from "@/modules/leads/lost-reason";
 import { leadCanConvert, leadCanVerify, leadPriorityLabel, leadSourceLabel } from "@/modules/leads/status";
 import { prisma } from "@/db";
-import { leadDetail, leadDuplicateMatches } from "@/modules/leads/queries";
+import { leadDetail } from "@/modules/leads/queries";
 import { listCategories, listSalesOrderProducts } from "@/lib/queries";
 
 type SpecRecord = Record<string, unknown>;
@@ -252,7 +251,11 @@ export default async function LeadDetailPage({
   const lead = await leadDetail(id, plantIds);
   if (!lead) notFound();
 
+  /** Success create already raised quote ± SO — detail is read-only for conversion CTAs. */
+  const dealClosed =
+    Boolean(lead.salesOrder) || lead.status === "CONVERTED";
   const canConvert =
+    !dealClosed &&
     session.permissions.has("lead.convert") &&
     leadCanConvert(lead.status) &&
     lead.items.length > 0;
@@ -263,20 +266,23 @@ export default async function LeadDetailPage({
     "VERIFIED",
   ] as const;
   const showFulfillmentPreview =
-    !lead.salesOrder &&
+    !dealClosed &&
     fulfillmentPreviewStatuses.includes(
       lead.status as (typeof fulfillmentPreviewStatuses)[number],
     ) &&
     (session.permissions.has("lead.manage") || session.permissions.has("lead.convert"));
   const needsSalesProducts = canConvert || showFulfillmentPreview;
+  const showLeadPipelineActions =
+    !dealClosed &&
+    (session.permissions.has("lead.manage") ||
+      session.permissions.has("lead.verify") ||
+      session.permissions.has("lead.convert"));
+  const canManageQuotations =
+    !dealClosed && session.permissions.has("lead.manage");
+  const canApproveQuotations =
+    !dealClosed && session.permissions.has("quotation.approve");
 
-  const [duplicateMatches, sentQuotations, salesProducts, categories] = await Promise.all([
-    leadDuplicateMatches(lead.plantId, {
-      id: lead.id,
-      phone: lead.phone,
-      email: lead.email,
-      gstin: lead.gstin,
-    }),
+  const [sentQuotations, salesProducts, categories] = await Promise.all([
     listSentQuotationsForLead(lead.id, plantIds),
     needsSalesProducts ? listSalesOrderProducts(plantIds) : Promise.resolve([]),
     listCategories(plantIds),
@@ -501,10 +507,6 @@ export default async function LeadDetailPage({
         <LeadSentQuotationDownloads quotations={sentQuotations} />
       ) : null}
 
-      {duplicateMatches.length ? (
-        <LeadPossibleDuplicates matches={duplicateMatches} />
-      ) : null}
-
       {staleLevel !== "none" || followUpOverdue ? (
         <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card px-3 py-2">
           <LeadStaleBadge level={staleLevel} />
@@ -660,14 +662,31 @@ export default async function LeadDetailPage({
                         : "—",
                 },
                 {
-                  label: "Official follow-up",
+                  label: "Attended by",
+                  value: lead.attendedBy?.name || "—",
+                },
+                {
+                  label: "Official follow-up (Result)",
                   value: lead.result ? (
                     <StatusBadge status={lead.result} />
                   ) : (
                     "—"
                   ),
-                  subline: lead.attendedBy?.name || undefined,
+                  subline:
+                    lead.result === "FAILURE" && lead.resultReason
+                      ? `Reason · ${lead.resultReason}`
+                      : lead.result === "SUCCESS"
+                        ? "Deal closed as success from office follow-up"
+                        : undefined,
                 },
+                ...(lead.officeRemarks
+                  ? [
+                      {
+                        label: "Office remarks",
+                        value: lead.officeRemarks,
+                      },
+                    ]
+                  : []),
                 {
                   label: "Verified",
                   value: lead.verifiedAt
@@ -727,12 +746,11 @@ export default async function LeadDetailPage({
         />
       </SectionCard>
 
-      {!lead.salesOrder &&
-      (session.permissions.has("lead.view") || session.permissions.has("lead.manage")) ? (
+      {session.permissions.has("lead.view") || session.permissions.has("lead.manage") ? (
         <LeadQuotationsPanel
           leadId={lead.id}
-          canManage={session.permissions.has("lead.manage")}
-          canApprove={session.permissions.has("quotation.approve")}
+          canManage={canManageQuotations}
+          canApprove={canApproveQuotations}
         />
       ) : null}
 
@@ -763,9 +781,7 @@ export default async function LeadDetailPage({
             />
           ) : null}
 
-          {session.permissions.has("lead.manage") ||
-          session.permissions.has("lead.verify") ||
-          session.permissions.has("lead.convert") ? (
+          {showLeadPipelineActions ? (
             <LeadDetailActions
               leadId={lead.id}
               status={lead.status}

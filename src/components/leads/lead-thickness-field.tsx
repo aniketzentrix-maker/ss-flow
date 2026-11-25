@@ -175,11 +175,9 @@ export function LeadThicknessField({
           />
           {gaugeFromMm != null ? (
             <p className="text-xs text-muted">
-              Chart gauge:{" "}
+              Gauge{" "}
               <span className="font-semibold text-foreground">{gaugeLabel(gaugeFromMm)}</span>
             </p>
-          ) : mmValue.trim() ? (
-            <p className="text-xs text-muted">No gauge on Farma chart for this mm (e.g. 5 / 6 mm).</p>
           ) : null}
         </div>
       ) : (
@@ -218,17 +216,9 @@ export function LeadThicknessField({
           </div>
           {convertedFromGauge != null ? (
             <p className="text-xs text-muted">
-              Converted:{" "}
               <span className="font-semibold text-foreground">
                 {formatThicknessMm(convertedFromGauge)} mm
               </span>
-              {specs.thickness && specs.thickness !== formatThicknessMm(convertedFromGauge)
-                ? ` · variant match ${specs.thickness} mm`
-                : null}
-            </p>
-          ) : gaugeRaw.trim() ? (
-            <p className="text-xs text-amber-700 dark:text-amber-200">
-              Enter a Farma chart gauge (8–30). Missing odd sizes like 17 / 15 are not on the sheet.
             </p>
           ) : null}
         </div>

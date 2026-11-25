@@ -10,7 +10,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --import tsx --test src/lib/domain/buckets.test.ts src/lib/domain/uom.test.ts src/lib/domain/material-specifications.test.ts src/lib/domain/material-compatibility.test.ts src/lib/domain/business-categories.test.ts src/modules/production/material-allocation.test.ts src/modules/production/material-substitution.test.ts src/modules/planning/mrp.test.ts src/modules/procurement/domain.test.ts src/modules/masters/categories.test.ts src/modules/masters/grades-finishes.test.ts src/modules/masters/spec-options.test.ts src/modules/inventory/status.test.ts src/modules/leads/workflow.test.ts src/modules/leads/public-catalog.test.ts src/modules/sales/delivery-dates.test.ts src/modules/uom/category-uom.test.ts",
+    "test": "node --import tsx --test src/lib/domain/buckets.test.ts src/lib/domain/uom.test.ts src/lib/domain/material-specifications.test.ts src/lib/domain/material-compatibility.test.ts src/lib/domain/business-categories.test.ts src/lib/domain/product-spec-fields.test.ts src/modules/production/material-allocation.test.ts src/modules/production/material-substitution.test.ts src/modules/planning/mrp.test.ts src/modules/procurement/domain.test.ts src/modules/masters/categories.test.ts src/modules/masters/grades-finishes.test.ts src/modules/masters/spec-options.test.ts src/modules/inventory/status.test.ts src/modules/leads/workflow.test.ts src/modules/leads/public-catalog.test.ts src/modules/leads/quotations/pending-rates.test.ts src/modules/sales/delivery-dates.test.ts src/modules/uom/category-uom.test.ts",
     "test:integration": "node --import tsx --test src/modules/procurement/procurement.integration.test.ts",
     "db:deploy": "node scripts/migrate-deploy.mjs",
     "db:seed": "tsx prisma/seed.ts",
@@ -19,7 +19,8 @@
     "db:ensure-category-uoms": "tsx scripts/ensure-category-uoms.ts",
     "db:seed-stock": "tsx prisma/seed-demo-stock.ts",
     "db:cleanup-duplicate-products": "tsx scripts/cleanup-duplicate-products.ts",
-    "jobs:deliver-notifications": "tsx scripts/deliver-notifications.ts"
+    "jobs:deliver-notifications": "tsx scripts/deliver-notifications.ts",
+    "export:price-template": "tsx scripts/export-price-template.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.9.1",
@@ -29,6 +30,7 @@
     "@tanstack/react-table": "^9.2.8",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "exceljs": "^4.4.0",
     "lucide-react": "^1.54.0",
     "next": "^16.4.6",
     "nodemailer": "^10.1.1",

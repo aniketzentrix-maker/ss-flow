@@ -23,6 +23,8 @@ export async function runCommand<T extends Prisma.InputJsonObject>(options: {
   route: string;
   key: string | null;
   run: (tx: Tx) => Promise<T>;
+  /** Override interactive-transaction wait/timeout (Neon round-trips add up for chatty commands). */
+  txOpts?: { maxWait?: number; timeout?: number };
 }): Promise<T> {
   if (!options.key) {
     throw new AppError(400, "IDEMPOTENCY_KEY_REQUIRED", "Send an Idempotency-Key header.");
@@ -52,7 +54,7 @@ export async function runCommand<T extends Prisma.InputJsonObject>(options: {
         });
         return result;
       },
-      COMMAND_TX_OPTS,
+      options.txOpts ?? COMMAND_TX_OPTS,
     );
   } catch (error) {
     if (error instanceof Error && "code" in error && (error as { code?: string }).code === "P2002") {

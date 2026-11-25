@@ -247,40 +247,44 @@ model ProductUom {
 }
 
 model ProductVariant {
-  id               String          @id @db.Uuid
-  plantId          String          @map("plant_id") @db.Uuid
-  productId        String          @map("product_id") @db.Uuid
-  sku              String
-  displayName      String?         @map("display_name")
-  grade            String?
-  thicknessMm      Decimal?        @map("thickness_mm") @db.Decimal(10, 3)
-  widthMm          Decimal?        @map("width_mm") @db.Decimal(10, 2)
-  lengthMm         Decimal?        @map("length_mm") @db.Decimal(10, 2)
-  diameterMm       Decimal?        @map("diameter_mm") @db.Decimal(10, 2)
-  finish           String?
-  gradeId          String?         @map("grade_id") @db.Uuid
-  finishId         String?         @map("finish_id") @db.Uuid
-  attributes       Json            @default("{}")
-  materialMasterId String?         @unique @map("material_master_id") @db.Uuid
-  unitId           String?         @map("unit_id") @db.Uuid
-  isActive         Boolean         @default(true) @map("is_active")
-  createdAt        DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt        DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
-  plant            Plant           @relation(fields: [plantId], references: [id])
-  product          Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
-  materialMaster   MaterialMaster? @relation(fields: [materialMasterId], references: [id])
-  unit             UnitOfMeasure?  @relation(fields: [unitId], references: [id])
-  gradeRecord      GradeMaster?    @relation(fields: [gradeId], references: [id])
-  finishRecord     FinishMaster?   @relation(fields: [finishId], references: [id])
-  bomItemsAsComponent BomItem[]    @relation("BomComponentVariant")
-  productionOrders ProductionOrder[]
-  materialIssues   ProductionMaterialIssue[]
-  productionOutputs ProductionOutput[]
-  leadItems         LeadItem[]
+  id                  String          @id @db.Uuid
+  plantId             String          @map("plant_id") @db.Uuid
+  productId           String          @map("product_id") @db.Uuid
+  sku                 String
+  displayName         String?         @map("display_name")
+  grade               String?
+  thicknessMm         Decimal?        @map("thickness_mm") @db.Decimal(10, 3)
+  widthMm             Decimal?        @map("width_mm") @db.Decimal(10, 2)
+  lengthMm            Decimal?        @map("length_mm") @db.Decimal(10, 2)
+  diameterMm          Decimal?        @map("diameter_mm") @db.Decimal(10, 2)
+  finish              String?
+  gradeId             String?         @map("grade_id") @db.Uuid
+  finishId            String?         @map("finish_id") @db.Uuid
+  attributes          Json            @default("{}")
+  /** Normalized pricing-key fingerprint for product-scoped uniqueness (active rates). */
+  pricingFingerprint  String?         @map("pricing_fingerprint")
+  materialMasterId    String?         @unique @map("material_master_id") @db.Uuid
+  unitId              String?         @map("unit_id") @db.Uuid
+  isActive            Boolean         @default(true) @map("is_active")
+  createdAt           DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
+  plant               Plant           @relation(fields: [plantId], references: [id])
+  product             Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  materialMaster      MaterialMaster? @relation(fields: [materialMasterId], references: [id])
+  unit                UnitOfMeasure?  @relation(fields: [unitId], references: [id])
+  gradeRecord         GradeMaster?    @relation(fields: [gradeId], references: [id])
+  finishRecord        FinishMaster?   @relation(fields: [finishId], references: [id])
+  bomItemsAsComponent BomItem[]       @relation("BomComponentVariant")
+  productionOrders    ProductionOrder[]
+  materialIssues      ProductionMaterialIssue[]
+  productionOutputs   ProductionOutput[]
+  leadItems           LeadItem[]
   @@unique([plantId, sku])
   @@index([productId])
   @@index([gradeId])
   @@index([finishId])
+  /// Partial unique index also exists in SQL: (product_id, pricing_fingerprint) WHERE is_active AND fingerprint IS NOT NULL
+  @@index([productId, pricingFingerprint])
   @@map("product_variants")
 }
 

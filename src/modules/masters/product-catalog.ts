@@ -10,7 +10,7 @@ import { legacyCategoryFromProductType } from "@/lib/domain/master-entities";
 import { allow } from "@/modules/shared/allow";
 import { normalizeProductGst } from "@/lib/domain/gst";
 import { syncAllowedUomsBySku } from "@/modules/uom/product-uoms";
-import { normalizeMasterName, validateSpecificationCompatibility } from "./grades-finishes";
+import { normalizeMasterName } from "./grades-finishes";
 
 export type CreateDeskProductInput = {
   sku?: string;
@@ -25,131 +25,8 @@ export type CreateDeskProductInput = {
   specs?: Record<string, string>;
 };
 
-export type ProductVariantInput = {
-  id?: string;
-  displayName?: string;
-  grade?: string;
-  finish?: string;
-  thickness?: string;
-  width?: string;
-  length?: string;
-  diameter?: string;
-  uom?: string;
-  attributes?: Record<string, unknown>;
-  isActive?: boolean;
-};
-
-export async function saveProductVariant(session: SessionUser, productId: string, input: ProductVariantInput, key: string | null) {
-  allow(session, "plant.manage");
-  const plantIds = await plantIdsForSession(session);
-  return runCommand({
-    userId: session.userId,
-    route: input.id ? "product.variant.update" : "product.variant.create",
-    key,
-    run: async (tx) => {
-      const product = await tx.product.findFirst({
-        where: { id: productId, plantId: { in: plantIds }, isActive: true },
-        include: { variants: { include: { materialMaster: true, unit: true } } },
-      });
-      if (!product) throw new AppError(404, "NOT_FOUND", "Active parent product not found.");
-      const existing = input.id ? product.variants.find((variant) => variant.id === input.id) : undefined;
-      if (input.id && !existing) throw new AppError(404, "NOT_FOUND", "Variant not found under this product.");
-      const clean = (value?: string | null) => value?.trim() || null;
-      const numeric = (value?: string) => value?.trim() ? value.trim() : null;
-      const asDecimal = (value?: string | null) => (value && Number.isFinite(Number(value)) ? new Prisma.Decimal(value) : null);
-      const values = {
-        grade: clean(input.grade), finish: clean(input.finish),
-        thicknessMm: numeric(input.thickness), widthMm: numeric(input.width),
-        lengthMm: numeric(input.length), diameterMm: numeric(input.diameter),
-      };
-      const duplicate = product.variants.find((variant) => variant.id !== input.id && variant.isActive &&
-        variant.grade === values.grade && variant.finish === values.finish &&
-        Number(variant.thicknessMm ?? 0) === Number(values.thicknessMm ?? 0) &&
-        Number(variant.widthMm ?? 0) === Number(values.widthMm ?? 0) &&
-        Number(variant.lengthMm ?? 0) === Number(values.lengthMm ?? 0) &&
-        Number(variant.diameterMm ?? 0) === Number(values.diameterMm ?? 0));
-      if (duplicate && input.isActive !== false) throw new AppError(409, "DUPLICATE", "An active variant with these specifications already exists.");
-      const baseMaterial = existing?.materialMaster ?? product.variants.find((variant) => variant.materialMaster)?.materialMaster;
-      if (!baseMaterial) throw new AppError(409, "INVALID_STATE", "This product has no linked stock SKU to use as a variant template.");
-      const unit = input.uom ? await tx.unitOfMeasure.findFirst({ where: { plantId: product.plantId, symbol: input.uom, isActive: true } }) : (existing?.unit ?? product.variants.find((variant) => variant.unit)?.unit);
-      if (!unit) throw new AppError(400, "VALIDATION", "Choose a valid unit of measure.");
-      const previousAttrs = existing?.attributes && typeof existing.attributes === "object" && !Array.isArray(existing.attributes) ? existing.attributes as Record<string, unknown> : {};
-      const attrs: Record<string, unknown> = { ...(input.attributes ?? previousAttrs) };
-      for (const [key, value] of Object.entries({ grade: values.grade, finish: values.finish, thickness: values.thicknessMm, width: values.widthMm, length: values.lengthMm, diameter: values.diameterMm })) {
-        delete attrs[key];
-        if (value) attrs[key] = value;
-      }
-      const autoName = [product.name, values.grade, values.finish, values.thicknessMm && `${values.thicknessMm} mm`, values.widthMm && `W ${values.widthMm} mm`, values.lengthMm && `L ${values.lengthMm} mm`, values.diameterMm && `Ø ${values.diameterMm} mm`].filter(Boolean).join(" · ");
-      const displayName = clean(input.displayName) ?? autoName;
-      const compats = await validateSpecificationCompatibility(tx, {
-        productId: product.id,
-        grade: values.grade,
-        finish: values.finish,
-      });
-      const resolvedGrade = compats.gradeName ?? values.grade;
-      const resolvedFinish = compats.finishName ?? values.finish;
-
-      if (existing) {
-        const active = input.isActive ?? existing.isActive;
-        await tx.productVariant.update({
-          where: { id: existing.id },
-          data: {
-            displayName,
-            ...values,
-            grade: resolvedGrade,
-            finish: resolvedFinish,
-            gradeId: compats.gradeId ?? existing.gradeId,
-            finishId: compats.finishId ?? existing.finishId,
-            unitId: unit.id,
-            attributes: attrs as Prisma.InputJsonObject,
-            isActive: active,
-          },
-        });
-        if (existing.materialMasterId) {
-          await tx.materialMaster.update({
-            where: { id: existing.materialMasterId },
-            data: {
-              name: displayName,
-              grade: resolvedGrade,
-              thickness: asDecimal(values.thicknessMm),
-              width: asDecimal(values.widthMm),
-              length: asDecimal(values.lengthMm),
-              diameter: asDecimal(values.diameterMm),
-              uom: unit.symbol,
-              active,
-              specs: attrs as Prisma.InputJsonObject,
-            },
-          });
-        }
-        await audit(tx, { userId: session.userId, action: active ? "product.variant.update" : "product.variant.deactivate", resource: "product_variant", resourceId: existing.id });
-        return { id: existing.id, displayName, isActive: active };
-      }
-      const variantId = uuidv7();
-      const materialId = uuidv7();
-      const sku = `${product.sku.slice(0, 20)}-V${variantId.slice(-6).toUpperCase()}`;
-      const collision = await tx.materialMaster.findFirst({ where: { plantId: product.plantId, code: sku } });
-      if (collision) throw new AppError(409, "DUPLICATE", "Generated variant SKU collided. Please retry.");
-      await tx.materialMaster.create({ data: {
-        id: materialId, plantId: product.plantId, code: sku, name: displayName,
-        category: baseMaterial.category, categoryId: baseMaterial.categoryId, productType: baseMaterial.productType,
-        shape: baseMaterial.shape, description: baseMaterial.description, brand: baseMaterial.brand, hsnCode: baseMaterial.hsnCode,
-        uom: unit.symbol, purchaseUom: baseMaterial.purchaseUom, salesUom: unit.symbol,
-        batchTracking: baseMaterial.batchTracking, serialTracking: baseMaterial.serialTracking,
-        grade: resolvedGrade, thickness: asDecimal(values.thicknessMm), width: asDecimal(values.widthMm), length: asDecimal(values.lengthMm), diameter: asDecimal(values.diameterMm),
-        purchaseAllowed: baseMaterial.purchaseAllowed, salesAllowed: baseMaterial.salesAllowed, manufacturingAllowed: baseMaterial.manufacturingAllowed,
-        purchasePrice: baseMaterial.purchasePrice, sellingPrice: baseMaterial.sellingPrice, taxRate: baseMaterial.taxRate, specs: attrs as Prisma.InputJsonObject, active: input.isActive ?? true,
-      } });
-      await tx.productVariant.create({ data: {
-        id: variantId, plantId: product.plantId, productId, sku, displayName, materialMasterId: materialId,
-        unitId: unit.id, ...values, grade: resolvedGrade, finish: resolvedFinish,
-        gradeId: compats.gradeId, finishId: compats.finishId,
-        attributes: attrs as Prisma.InputJsonObject, isActive: input.isActive ?? true,
-      } });
-      await audit(tx, { userId: session.userId, action: "product.variant.create", resource: "product_variant", resourceId: variantId });
-      return { id: variantId, displayName, sku, isActive: input.isActive ?? true };
-    },
-  });
-}
+export type { ProductVariantInput } from "./product-variant-save";
+export { saveProductVariant } from "./product-variant-save";
 
 export async function createDeskProduct(session: SessionUser, input: CreateDeskProductInput, key: string | null) {
   allow(session, "plant.manage");
@@ -707,7 +584,7 @@ const catalogProductInclude = {
   variants: {
     include: {
       unit: true,
-      materialMaster: { select: { id: true, code: true, active: true } },
+      materialMaster: { select: { id: true, code: true, active: true, sellingPrice: true } },
     },
     orderBy: { sku: "asc" as const },
   },

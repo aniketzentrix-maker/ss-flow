@@ -22,6 +22,12 @@ import {
   updateLeadItems,
   updateLeadNegotiation,
 } from "@/modules/leads/commands";
+import { finalizeSuccessfulLeadDeal } from "@/modules/leads/finalize-success";
+import { z } from "zod";
+
+const finalizeSuccessSchema = z.object({
+  mode: z.enum(["quotation", "sales_order"]).default("sales_order"),
+});
 
 export async function POST(request: Request, ctx: { params: Promise<{ id: string; action: string }> }) {
   try {
@@ -72,6 +78,11 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
       const session = await requirePermission("lead.manage");
       const body = await readJson(request, leadNegotiationSchema);
       return jsonData(await updateLeadNegotiation(session, id, body, key));
+    }
+    if (action === "finalize-success") {
+      const session = await requirePermission("lead.manage");
+      const body = await readJson(request, finalizeSuccessSchema);
+      return jsonData(await finalizeSuccessfulLeadDeal(session, id, body.mode, key));
     }
 
     return jsonData(null, 404);

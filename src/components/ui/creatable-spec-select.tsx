@@ -21,6 +21,11 @@ export type CreatableSpecSelectProps = {
   placeholder?: string;
   disabled?: boolean;
   canCreate?: boolean;
+  /**
+   * When true, new Grade/Finish values stay local until Save & Apply Rate
+   * (no immediate POST to master tables).
+   */
+  draftOnly?: boolean;
   permissionHint?: string;
   categoryId?: string;
   productId?: string;
@@ -86,6 +91,7 @@ export function CreatableSpecSelect({
   placeholder,
   disabled = false,
   canCreate = true,
+  draftOnly = false,
   permissionHint = "Ask an admin to add this",
   categoryId,
   productId,
@@ -252,6 +258,22 @@ export function CreatableSpecSelect({
       setIsOpen(false);
       setSearch("");
       toast.info(`Selected existing ${label.toLowerCase()} "${existing.value}".`);
+      return;
+    }
+
+    if (draftOnly) {
+      const draftOpt: SpecOption = {
+        value: trimmed,
+        label: unit && isNumeric ? `${trimmed} ${unit}` : trimmed,
+        unit: unit || undefined,
+      };
+      setCreatedOptions((prev) => [...prev, draftOpt]);
+      onChange(draftOpt.value);
+      onOptionAdded?.(draftOpt);
+      toast.info(`${label} "${trimmed}" kept as draft until Save & Apply Rate.`);
+      setIsAdding(false);
+      setIsOpen(false);
+      setSearch("");
       return;
     }
 

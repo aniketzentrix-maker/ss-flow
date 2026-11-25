@@ -5,10 +5,8 @@ import { FormFeedback } from "@/components/form-feedback";
 import { Button, Field, controlClass } from "@/components/ui";
 import { usePost } from "@/components/use-post";
 import { useConfirmModal } from "@/components/confirmation-modal";
-import { statusRequiresNextFollowUp } from "@/modules/leads/follow-up";
 import { isCustomLeadOrder, leadOrderTypeLabel } from "@/modules/leads/order-type";
 import {
-  leadRequiresLostReason,
   leadStatusDescription,
   leadStatusLabel,
   manualLeadStatusOptions,
@@ -18,24 +16,9 @@ import { lostReasonOptions } from "@/modules/leads/lost-reason";
 
 const VERIFY_CHECKS = [
   {
-    key: "customerConfirmed",
-    label: "Customer & contact confirmed",
-    detail: "Company, contact person, phone and email match the enquiry",
-  },
-  {
-    key: "itemsConfirmed",
-    label: "Material & specifications confirmed",
-    detail: "Grade, finish, thickness and dimensions agreed with the customer",
-  },
-  {
     key: "quantityConfirmed",
     label: "Quantity & UOM confirmed",
     detail: "Order quantity and unit of measure are commercially workable",
-  },
-  {
-    key: "genuineRequirementConfirmed",
-    label: "Genuine buying requirement",
-    detail: "Need is real and actionable — not a price check or incomplete query",
   },
 ] as const;
 
@@ -82,17 +65,29 @@ export function LeadDetailActions({
   const convertPost = usePost();
   const { confirm, ConfirmDialog } = useConfirmModal();
   const [checks, setChecks] = useState({
-    customerConfirmed: false,
-    itemsConfirmed: false,
     quantityConfirmed: false,
-    genuineRequirementConfirmed: false,
   });
   const [verifyNotes, setVerifyNotes] = useState("");
-  const availableStatuses = manualLeadStatusOptions(status, orderType);
-  const [newStatus, setNewStatus] = useState<string>(availableStatuses[0] ?? "CONTACTED");
+  const [qualifiedLocally, setQualifiedLocally] = useState(false);
+  /** UI choices only — Follow-up saves as Contacted; Lost marks lost. */
+  const availableStatuses = (["FOLLOW_UP", "LOST"] as const).filter((value) => {
+    if (value === "LOST") {
+      return status !== "LOST" && status !== "REJECTED" && status !== "CONVERTED";
+    }
+    // Follow-up action keeps/moves the lead to Contacted
+    return (
+      status === "CONTACTED" ||
+      status === "NEW" ||
+      status === "FOLLOW_UP" ||
+      status === "ON_HOLD" ||
+      status === "VERIFICATION_PENDING" ||
+      manualLeadStatusOptions(status, orderType).includes("CONTACTED") ||
+      manualLeadStatusOptions(status, orderType).includes("FOLLOW_UP")
+    );
+  });
+  const [newStatus, setNewStatus] = useState<string>("FOLLOW_UP");
   const [statusReason, setStatusReason] = useState("");
   const [lostReasonCode, setLostReasonCode] = useState("");
-  const [rejectionCode, setRejectionCode] = useState("");
   const [competitorName, setCompetitorName] = useState(initialCompetitorName);
   const [competitorRate, setCompetitorRate] = useState(initialCompetitorRate);
   const [customerTargetRate, setCustomerTargetRate] = useState(initialCustomerTargetRate);
@@ -126,21 +121,30 @@ export function LeadDetailActions({
   const isPromisedLateInReview = Boolean(
     initialRequired && confirmPromisedDate && confirmPromisedDate > initialRequired,
   );
-  const allChecks = Object.values(checks).every(Boolean);
-  const selectedStatus = (availableStatuses.includes(newStatus as LeadStatus)
+  const quantityConfirmed = checks.quantityConfirmed;
+  const showConvert = canConvert || qualifiedLocally;
+  const selectedStatus = ((availableStatuses as readonly string[]).includes(newStatus)
     ? newStatus
     : availableStatuses[0] ?? "") as LeadStatus | "";
-  const reasonRequired = selectedStatus ? leadRequiresLostReason(selectedStatus) : false;
-  const lostOutcome = selectedStatus === "LOST" || selectedStatus === "REJECTED" ? selectedStatus : null;
+  const isFollowUpStage = selectedStatus === "FOLLOW_UP";
+  const isLostStage = selectedStatus === "LOST";
   const stageReasonReady =
-    !reasonRequired ||
+    !isLostStage ||
     (Boolean(lostReasonCode) && (lostReasonCode !== "OTHER" || statusReason.trim().length > 0));
-  const followUpRequired = selectedStatus ? statusRequiresNextFollowUp(selectedStatus) : false;
   const legacyVerificationStage = status === "VERIFICATION_PENDING";
   const preQualified = ["NEW", "CONTACTED", "FOLLOW_UP", "ON_HOLD", "VERIFICATION_PENDING"].includes(status);
   const customOrder = isCustomLeadOrder(orderType);
   const customPoWarning =
     customOrder && reviewOpen && !poNumber.trim() && !advanceAmount.trim();
+
+  function datetimeLocalValue(date: Date) {
+    const pad = (value: number) => String(value).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  }
+
+  function setFollowUpToday() {
+    setNextFollowUpAt(datetimeLocalValue(new Date()));
+  }
 
   useEffect(() => {
     if (!reviewOpen) return;
@@ -177,7 +181,7 @@ export function LeadDetailActions({
 
   return (
     <div className="grid gap-4">
-      {/* Step 1 — advance the lead through the commercial pipeline */}
+      {/* Step 1 — simple stage update: Follow-up or Lost */}
       {canManage && status !== "CONVERTED" && availableStatuses.length > 0 ? (
         <section className="space-y-3 rounded-xl border border-border bg-card p-4">
           <div className="flex flex-wrap items-start justify-between gap-2">
@@ -185,13 +189,13 @@ export function LeadDetailActions({
               <p className="text-[10px] font-semibold uppercase tracking-wide text-muted">Step 1</p>
               <h2 className="font-semibold">Update lead stage</h2>
               <p className="mt-0.5 text-sm text-muted">
-                Advance the commercial pipeline (contact → quote → negotiation). Current stage:{" "}
+                Current stage:{" "}
                 <span className="font-medium text-foreground">{leadStatusLabel(status)}</span>
                 {leadStatusDescription(status) ? ` — ${leadStatusDescription(status)}` : ""}.
               </p>
             </div>
           </div>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_2fr_auto] sm:items-end">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(12rem,1fr)_auto] sm:items-end">
             <Field label="Next stage">
               <select
                 className={controlClass}
@@ -205,124 +209,70 @@ export function LeadDetailActions({
                 ))}
               </select>
             </Field>
-            <Field
-              label={followUpRequired ? "Next follow-up (required)" : "Next follow-up"}
-              detail={followUpRequired ? "Required for this stage" : undefined}
-            >
-              <input
-                type="datetime-local"
-                className={controlClass}
-                value={nextFollowUpAt}
-                onChange={(event) => setNextFollowUpAt(event.target.value)}
-              />
-            </Field>
-            {lostOutcome ? (
-              <>
-                <Field label="Structured reason (required)">
-                  <select
-                    className={controlClass}
-                    value={lostReasonCode}
-                    onChange={(event) => setLostReasonCode(event.target.value)}
-                  >
-                    <option value="">Select reason</option>
-                    {lostReasonOptions(lostOutcome).map((option) => (
-                      <option key={option.code} value={option.code}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-                <Field
-                  label={lostReasonCode === "OTHER" ? "Details (required)" : "Additional note"}
-                  detail="Stored in activity history"
+            {isFollowUpStage ? (
+              <div className="flex flex-wrap gap-2 sm:justify-end">
+                <Button type="button" tone="ghost" onClick={setFollowUpToday}>
+                  Today
+                </Button>
+                <Button
+                  pending={statusPost.pending}
+                  disabled={!nextFollowUpAt.trim()}
+                  onClick={() =>
+                    void statusPost.post(
+                      `/api/v1/leads/${leadId}/status`,
+                      {
+                        // Working stage stays Contacted; follow-up is the next action + date.
+                        status: "CONTACTED",
+                        reason: statusReason || undefined,
+                        lostReasonNote: statusReason || undefined,
+                        nextFollowUpAt: nextFollowUpAt || undefined,
+                      },
+                      { successMessage: "Contacted · follow-up saved." },
+                    )
+                  }
                 >
-                  <input
-                    className={controlClass}
-                    value={statusReason}
-                    onChange={(event) => setStatusReason(event.target.value)}
-                    placeholder={
-                      lostReasonCode === "OTHER" ? "Describe why" : "Optional context"
-                    }
-                  />
-                </Field>
-                {lostOutcome === "LOST" ? (
-                  <>
-                    <Field label="Competitor name" detail="optional">
-                      <input
-                        className={controlClass}
-                        value={competitorName}
-                        onChange={(event) => setCompetitorName(event.target.value)}
-                      />
-                    </Field>
-                    <Field label="Competitor rate" detail="optional">
-                      <input
-                        className={controlClass}
-                        inputMode="decimal"
-                        value={competitorRate}
-                        onChange={(event) => setCompetitorRate(event.target.value)}
-                      />
-                    </Field>
-                  </>
-                ) : null}
-              </>
-            ) : (
-              <Field label="Note (optional)" detail={selectedStatus ? leadStatusDescription(selectedStatus) : undefined}>
+                  Save follow-up
+                </Button>
+              </div>
+            ) : null}
+          </div>
+
+          {isFollowUpStage ? (
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field
+                label="Next follow-up (required)"
+                detail="Date & time for the next follow-up"
+              >
+                <input
+                  type="datetime-local"
+                  className={controlClass}
+                  value={nextFollowUpAt}
+                  onChange={(event) => setNextFollowUpAt(event.target.value)}
+                />
+              </Field>
+              <Field label="Note" detail="Optional note for activity history">
                 <input
                   className={controlClass}
                   value={statusReason}
                   onChange={(event) => setStatusReason(event.target.value)}
-                  placeholder="Optional note for the activity history"
+                  placeholder="Optional note"
                 />
               </Field>
-            )}
-            {selectedStatus === "NEGOTIATION" ? (
-              <Field label="Customer target rate" detail="optional">
-                <input
-                  className={controlClass}
-                  inputMode="decimal"
-                  value={customerTargetRate}
-                  onChange={(event) => setCustomerTargetRate(event.target.value)}
-                />
-              </Field>
-            ) : null}
-            <Button
-              pending={statusPost.pending}
-              disabled={
-                !stageReasonReady ||
-                (followUpRequired && !nextFollowUpAt.trim())
-              }
-              onClick={() =>
-                void statusPost.post(
-                  `/api/v1/leads/${leadId}/status`,
-                  {
-                    status: selectedStatus,
-                    lostReasonCode: lostReasonCode || undefined,
-                    lostReasonNote: statusReason || undefined,
-                    competitorName: competitorName || undefined,
-                    competitorRate: competitorRate || undefined,
-                    customerTargetRate:
-                      selectedStatus === "NEGOTIATION" ? customerTargetRate || undefined : undefined,
-                    nextFollowUpAt: nextFollowUpAt || undefined,
-                  },
-                  { successMessage: "Lead stage updated." },
-                )
-              }
-            >
-              Save stage
-            </Button>
-          </div>
+            </div>
+          ) : null}
+
           <FormFeedback error={statusPost.error} success={statusPost.success} />
-          {preQualified && canVerify ? (
+          {preQualified && canVerify && !isLostStage ? (
             <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/40 dark:text-amber-100">
-              When contact, specs and quantity are confirmed, complete <strong>Step 2 — Verify requirement</strong>{" "}
-              to mark the lead as <strong>Qualified</strong> (no separate verification stage needed).
+              Confirm <strong>Quantity &amp; UOM</strong> in <strong>Step 2 — Verify requirement</strong>, then
+              create the sales order.
             </p>
           ) : null}
         </section>
       ) : null}
 
-      {/* Step 2 — verification checklist (after stage progress) */}
-      {canVerify ? (
+      {/* Step 2 — verification checklist (after stage progress); hidden when Lost is selected */}
+      {canVerify && !isLostStage ? (
         <section
           className={`space-y-3 rounded-xl border p-4 ${
             legacyVerificationStage
@@ -330,36 +280,12 @@ export function LeadDetailActions({
               : "border-amber-300 bg-card"
           }`}
         >
-          <div className="flex items-start gap-2">
-            <input
-              id={`verify-all-${leadId}`}
-              type="checkbox"
-              checked={allChecks}
-              onChange={(event) => {
-                const checked = event.target.checked;
-                setChecks({
-                  customerConfirmed: checked,
-                  itemsConfirmed: checked,
-                  quantityConfirmed: checked,
-                  genuineRequirementConfirmed: checked,
-                });
-              }}
-              aria-label="Select all verification checks"
-              className="mt-1 size-4 accent-[var(--success)]"
-            />
-            <div>
-              <p className="text-[10px] font-semibold uppercase tracking-wide text-muted">Step 2</p>
-              <h2 className="font-semibold">
-                <label htmlFor={`verify-all-${leadId}`} className="cursor-pointer">
-                  Verify requirement
-                </label>
-              </h2>
-              <p className="mt-0.5 text-sm text-muted">
-                Confirm each check once the enquiry is understood. This marks the lead{" "}
-                <strong>Qualified</strong>. Use the <strong>Quotations</strong> section above to enter market
-                and offer rates per product before you send the quote to the customer.
-              </p>
-            </div>
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-muted">Step 2</p>
+            <h2 className="font-semibold">Verify requirement</h2>
+            <p className="mt-0.5 text-sm text-muted">
+              Confirm quantity and UOM. Once checked, you can create the <strong>Sales Order</strong>.
+            </p>
           </div>
           <div className="grid gap-2.5 text-sm">
             {VERIFY_CHECKS.map(({ key, label, detail }) => (
@@ -391,91 +317,118 @@ export function LeadDetailActions({
             />
           </Field>
           <FormFeedback error={verifyPost.error} success={verifyPost.success} />
-          <Button
-            pending={verifyPost.pending}
-            disabled={!allChecks}
-            onClick={() =>
-              void verifyPost.post(
-                `/api/v1/leads/${leadId}/verify`,
-                { checks, verificationNotes: verifyNotes || undefined },
-                { successMessage: "Lead marked as qualified." },
-              )
-            }
-          >
-            Mark as qualified
-          </Button>
+          {quantityConfirmed ? (
+            <Button
+              pending={verifyPost.pending}
+              onClick={() => {
+                void (async () => {
+                  if (!showConvert) {
+                    const result = await verifyPost.post(
+                      `/api/v1/leads/${leadId}/verify`,
+                      { checks, verificationNotes: verifyNotes || undefined },
+                      { successMessage: "Lead marked as qualified." },
+                    );
+                    if (!result) return;
+                    setQualifiedLocally(true);
+                  }
+                  setReviewOpen(true);
+                })();
+              }}
+            >
+              Create Sales Order
+            </Button>
+          ) : null}
         </section>
       ) : null}
 
-      {canManage && !["CONVERTED", "REJECTED", "LOST"].includes(status) ? (
+      {canManage &&
+      isLostStage &&
+      !["CONVERTED", "REJECTED", "LOST"].includes(status) &&
+      availableStatuses.includes("LOST") ? (
         <section className="space-y-3 rounded-xl border border-border bg-card p-4">
           <h2 className="font-semibold">Reject enquiry</h2>
           <p className="text-sm text-muted">
-            Use this when the enquiry is invalid or cannot be fulfilled. Prefer{" "}
-            <strong>Lost</strong> in Step 1 when the customer simply chose not to proceed.
+            Mark this enquiry as lost when the customer will not proceed.
           </p>
           <Field label="Structured reason (required)">
             <select
               className={controlClass}
-              value={rejectionCode}
-              onChange={(event) => setRejectionCode(event.target.value)}
+              value={lostReasonCode}
+              onChange={(event) => setLostReasonCode(event.target.value)}
             >
               <option value="">Select reason</option>
-              {lostReasonOptions("REJECTED").map((option) => (
+              {lostReasonOptions("LOST").map((option) => (
                 <option key={option.code} value={option.code}>
                   {option.label}
                 </option>
               ))}
             </select>
           </Field>
-          <Field label={rejectionCode === "OTHER" ? "Details (required)" : "Additional note"}>
+          <Field label={lostReasonCode === "OTHER" ? "Details (required)" : "Additional note"}>
             <textarea
               className={`${controlClass} min-h-20`}
               value={statusReason}
               onChange={(event) => setStatusReason(event.target.value)}
             />
           </Field>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="Competitor name" detail="optional">
+              <input
+                className={controlClass}
+                value={competitorName}
+                onChange={(event) => setCompetitorName(event.target.value)}
+              />
+            </Field>
+            <Field label="Competitor rate" detail="optional">
+              <input
+                className={controlClass}
+                inputMode="decimal"
+                value={competitorRate}
+                onChange={(event) => setCompetitorRate(event.target.value)}
+              />
+            </Field>
+          </div>
           <FormFeedback error={rejectPost.error} success={rejectPost.success} />
           <Button
             tone="danger"
             pending={rejectPost.pending}
-            disabled={
-              !rejectionCode || (rejectionCode === "OTHER" && !statusReason.trim())
-            }
+            disabled={!stageReasonReady}
             onClick={() => {
               confirm({
-                title: "Reject lead?",
-                message: "You're about to mark this lead as rejected.",
+                title: "Mark lead as lost?",
+                message: "You're about to mark this lead as lost.",
                 consequence: (
                   <>
                     <strong className="font-semibold text-slate-800 dark:text-slate-100">
-                      Status updated to Rejected.
+                      Status updated to Lost.
                     </strong>{" "}
                     The reason will be permanently saved in the lead activity history.
                   </>
                 ),
-                confirmText: "Reject lead",
+                confirmText: "Mark as lost",
                 cancelText: "Cancel",
                 tone: "danger",
                 onConfirm: () =>
                   rejectPost.post(
                     `/api/v1/leads/${leadId}/status`,
                     {
-                      status: "REJECTED",
-                      lostReasonCode: rejectionCode,
+                      status: "LOST",
+                      lostReasonCode: lostReasonCode || undefined,
                       lostReasonNote: statusReason || undefined,
+                      competitorName: competitorName || undefined,
+                      competitorRate: competitorRate || undefined,
                     },
-                    { successMessage: "Lead rejected." },
+                    { successMessage: "Lead marked as lost." },
                   ),
               });
             }}
           >
-            Reject Lead
+            Mark as lost
           </Button>
         </section>
       ) : null}
 
-      {showFulfillmentPreview && !canConvert && products.length > 0 ? (
+      {showFulfillmentPreview && !showConvert && products.length > 0 ? (
         <section className="space-y-3 rounded-xl border border-border bg-card p-4">
           <div>
             <h2 className="font-semibold">Stock & MOQ (quotation)</h2>
@@ -528,7 +481,7 @@ export function LeadDetailActions({
         </section>
       ) : null}
 
-      {canConvert ? (
+      {showConvert ? (
         <section className="space-y-3 rounded-xl border border-emerald-300 bg-card p-4">
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-wide text-muted">Step 3</p>
@@ -537,7 +490,9 @@ export function LeadDetailActions({
               Review stock vs production, PO details, and every line before confirming ({leadOrderTypeLabel(orderType)}).
             </p>
           </div>
-          <Button onClick={() => setReviewOpen(true)}>Create Sales Order</Button>
+          {!reviewOpen ? (
+            <Button onClick={() => setReviewOpen(true)}>Create Sales Order</Button>
+          ) : null}
           {reviewOpen ? (
             <div className="space-y-4 rounded-lg border border-border bg-muted/20 p-4" aria-label="Review sales order">
               <h3 className="font-semibold">Review Sales Order</h3>

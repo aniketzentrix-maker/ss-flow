@@ -16,11 +16,16 @@ import {
   visibleProductFields,
   missingRequiredSpecFields,
   invalidNumericSpecFields,
-  findBestVariantForSpecs,
+  resolveExactPricedVariant,
   isProductComingSoon,
   isAllowedDesignFile,
   DESIGN_FILE_ACCEPT,
   DESIGN_FILE_MAX_COUNT,
+  RATE_AMBIGUOUS_MESSAGE,
+  RATE_CONFLICT_CODE,
+  STALE_SPECIFICATION_CODE,
+  activePricingMatchKeys,
+  buildNormalizedPricingFingerprint,
 } from "@/lib/domain/product-spec-fields";
 import {
   useFieldArray,
@@ -30,10 +35,8 @@ import {
   type UseFormSetValue,
   type Control,
 } from "react-hook-form";
-import { LeadPossibleDuplicates } from "@/components/leads/lead-possible-duplicates";
 import { FormFeedback } from "@/components/form-feedback";
 import { usePost } from "@/components/use-post";
-import type { DuplicateMatch } from "@/modules/leads/duplicates";
 import { deriveLeadOrderTypeFromBusinessCategories, LEAD_GRADE_OPTIONS } from "@/modules/leads/order-type";
 import { estimateLeadItemWeightKg } from "@/modules/leads/estimate-item-weight";
 import {
@@ -103,6 +106,8 @@ type LeadItemValues = {
   size: string;
   quantity: string;
   uom: string;
+  /** Catalog list rate for the matched variant (₹ per price UOM). */
+  unitPrice: string;
   estimatedWeight: string;
   description: string;
   remarks: string;
@@ -168,6 +173,7 @@ function emptyItem(uom: string): LeadItemValues {
     size: "",
     quantity: "1",
     uom,
+    unitPrice: "",
     estimatedWeight: "",
     description: "",
     remarks: "",
@@ -183,6 +189,61 @@ function emptyItem(uom: string): LeadItemValues {
     requiredDeliveryDate: "",
     promisedDeliveryDate: "",
   };
+}
+
+function formatInr(value: number) {
+  if (!Number.isFinite(value)) return "—";
+  const rounded = Math.round(value * 100) / 100;
+  return `₹${rounded.toLocaleString("en-IN", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+}
+
+type LineAmountResult =
+  | { amount: number; basis: "quantity" | "weight"; missing?: undefined }
+  | { amount?: undefined; basis?: undefined; missing: string };
+
+/**
+ * Line amount from catalog unit rate + demand qty/UOM.
+ * ₹/kg with kg demand → qty × rate; ₹/piece with pieces → qty × rate;
+ * demand in pieces with ₹/kg rate → est. weight × rate (or explain what's missing).
+ */
+function leadLineAmount(
+  unitPrice: string,
+  quantity: string,
+  demandUom: string,
+  rateUom: string,
+  estimatedWeightKg: string,
+): LineAmountResult | null {
+  const rate = Number(unitPrice);
+  if (!Number.isFinite(rate) || rate <= 0) return null;
+  const qty = Number(quantity);
+  const demand = demandUom.trim().toUpperCase();
+  const priceUnit = (rateUom || demandUom).trim().toUpperCase();
+  const isKg = (symbol: string) => symbol === "KG" || symbol === "KGS";
+  const isPiece = (symbol: string) =>
+    ["PCS", "PC", "NOS", "NO", "PIECE", "PIECES"].includes(symbol);
+
+  if (isKg(priceUnit)) {
+    if (isKg(demand) && Number.isFinite(qty) && qty > 0) {
+      return { amount: qty * rate, basis: "quantity" };
+    }
+    const weight = Number(estimatedWeightKg);
+    if (Number.isFinite(weight) && weight > 0) {
+      return { amount: weight * rate, basis: "weight" };
+    }
+    return {
+      missing:
+        "Amount ke liye estimated weight (kg) chahiye — dimensions / qty complete karke weight auto-calculate hone do.",
+    };
+  }
+
+  if (isPiece(priceUnit) || !isKg(priceUnit)) {
+    if (Number.isFinite(qty) && qty > 0) {
+      return { amount: qty * rate, basis: "quantity" };
+    }
+    return { missing: "Amount ke liye demand quantity chahiye." };
+  }
+
+  return null;
 }
 
 function LeadField({
@@ -366,6 +427,33 @@ function DesignFilesField({
   );
 }
 
+type LeadCatalogProduct = {
+  id: string;
+  name: string;
+  sku: string;
+  categoryId: string;
+  categoryName: string;
+  variants: {
+    id: string;
+    materialMasterId: string;
+    sku: string;
+    displayName: string;
+    uom: string;
+    sellingPrice?: string;
+    specs: Record<string, unknown>;
+  }[];
+};
+
+type RateEditorState = {
+  mode: "create" | "set_price";
+  fingerprint: string;
+  specs: Record<string, string>;
+  unitRate: string;
+  conflictExistingRate?: string;
+  saving: boolean;
+  error?: string;
+};
+
 function LeadItemFields({
   index,
   register,
@@ -376,6 +464,7 @@ function LeadItemFields({
   categories,
   products,
   canManageProducts,
+  onCatalogVariantApplied,
 }: {
   index: number;
   register: UseFormRegister<FormValues>;
@@ -384,22 +473,13 @@ function LeadItemFields({
   canRemove: boolean;
   onRemove: () => void;
   categories: { id: string; name: string; code: string }[];
-  products: {
-    id: string;
-    name: string;
-    sku: string;
-    categoryId: string;
-    categoryName: string;
-    variants: {
-      id: string;
-      materialMasterId: string;
-      sku: string;
-      displayName: string;
-      uom: string;
-      specs: Record<string, unknown>;
-    }[];
-  }[];
+  products: LeadCatalogProduct[];
   canManageProducts: boolean;
+  onCatalogVariantApplied: (
+    productId: string,
+    variant: LeadCatalogProduct["variants"][number],
+    masters?: { grade?: { id: string; name: string }; finish?: { id: string; name: string } },
+  ) => void;
 }) {
   const categoryId = useWatch({ control, name: `items.${index}.categoryId` });
   const parentProductId = useWatch({
@@ -414,6 +494,7 @@ function LeadItemFields({
     (useWatch({ control, name: `items.${index}.specifications` }) as Record<string, string>) ?? {};
   const uom = useWatch({ control, name: `items.${index}.uom` });
   const quantity = useWatch({ control, name: `items.${index}.quantity` }) ?? "";
+  const unitPrice = useWatch({ control, name: `items.${index}.unitPrice` }) ?? "";
   const mfgGrade = useWatch({ control, name: `items.${index}.mfgGrade` }) ?? "";
   const itemRequiredDeliveryDate =
     useWatch({ control, name: `items.${index}.requiredDeliveryDate` }) ?? "";
@@ -428,6 +509,7 @@ function LeadItemFields({
     { id: string; symbol: string; name: string; isDefault: boolean }[]
   >([]);
   const [uomsLoading, setUomsLoading] = useState(false);
+  const [rateEditor, setRateEditor] = useState<RateEditorState | null>(null);
 
   const visibleProducts = products.filter(
     (product) => !categoryId || product.categoryId === categoryId,
@@ -625,26 +707,33 @@ function LeadItemFields({
 
   const syncVariantAndUom = (newSpecs: Record<string, string>) => {
     if (!config) return;
-    const missing = missingRequiredSpecFields(config, newSpecs);
-    const invalid = invalidNumericSpecFields(config, newSpecs);
-    const complete = missing.length === 0 && invalid.length === 0;
+    const resolved = resolveExactPricedVariant(variants, newSpecs, config);
 
-    if (complete) {
-      const best = findBestVariantForSpecs(variants, newSpecs, config);
-      if (best) {
-        setValue(`items.${index}.productVariantId`, best.id);
-        setValue(`items.${index}.productId`, best.materialMasterId);
-        // UOM comes from category mappings (loaded when parentProductId is set).
-        if (!uom && allowedUoms.length) {
-          const defaultUom =
-            allowedUoms.find((row) => row.isDefault)?.symbol || allowedUoms[0]?.symbol || "";
-          if (defaultUom) setValue(`items.${index}.uom`, defaultUom);
-        }
-      }
-    } else {
+    if (resolved.status === "incomplete") {
       setValue(`items.${index}.productVariantId`, "");
       setValue(`items.${index}.productId`, "");
+      setValue(`items.${index}.unitPrice`, "");
+      return;
     }
+
+    if (resolved.status === "exact" && resolved.variant) {
+      const best = resolved.variant;
+      setValue(`items.${index}.productVariantId`, best.id);
+      setValue(`items.${index}.productId`, best.materialMasterId);
+      // Blank catalog price stays blank (rate pending) — never coerce to 0.
+      setValue(`items.${index}.unitPrice`, best.sellingPrice?.trim() || "");
+      if (!uom && allowedUoms.length) {
+        const defaultUom =
+          allowedUoms.find((row) => row.isDefault)?.symbol || allowedUoms[0]?.symbol || "";
+        if (defaultUom) setValue(`items.${index}.uom`, defaultUom);
+      }
+      return;
+    }
+
+    // none | ambiguous — keep entered specs, clear stale IDs / price
+    setValue(`items.${index}.productVariantId`, "");
+    setValue(`items.${index}.productId`, "");
+    setValue(`items.${index}.unitPrice`, "");
   };
 
   const handleSpecChange = (key: string, value: string) => {
@@ -689,28 +778,12 @@ function LeadItemFields({
       delete values[laterKey];
     if (value) values[key] = value;
     else delete values[key];
-    const matches = variants.filter((variant) =>
-      fallbackSelectorKeys.every(
-        (specKey) =>
-          String(variant.specs[specKey] ?? "") === String(values[specKey] ?? ""),
-      ),
-    );
-    const exact = matches.length === 1 ? matches[0] : undefined;
-    const resolvedValues = exact
-      ? Object.fromEntries(
-          Object.entries(exact.specs)
-            .filter(
-              ([specKey, specValue]) =>
-                specValue != null &&
-                typeof specValue !== "object" &&
-                !isCustomerInputSpecification(specKey, specValue),
-            )
-            .map(([specKey, specValue]) => [specKey, String(specValue)]),
-        )
-      : values;
-    setValue(`items.${index}.specifications`, resolvedValues);
+    const resolved = resolveExactPricedVariant(variants, values, null);
+    const exact = resolved.status === "exact" ? resolved.variant : undefined;
+    setValue(`items.${index}.specifications`, values);
     setValue(`items.${index}.productVariantId`, exact?.id ?? "");
     setValue(`items.${index}.productId`, exact?.materialMasterId ?? "");
+    setValue(`items.${index}.unitPrice`, exact?.sellingPrice?.trim() || "");
     if (exact && allowedUoms.length) {
       const current = (uom || "").trim().toUpperCase();
       if (!allowedUoms.some((row) => row.symbol.toUpperCase() === current)) {
@@ -721,6 +794,26 @@ function LeadItemFields({
       }
     }
   };
+
+  function applyMatchedVariant(
+    exact: { id: string; materialMasterId: string; sellingPrice?: string } | undefined,
+  ) {
+    setValue(`items.${index}.productVariantId`, exact?.id ?? "");
+    setValue(`items.${index}.productId`, exact?.materialMasterId ?? "");
+    setValue(`items.${index}.unitPrice`, exact?.sellingPrice?.trim() || "");
+  }
+
+  const pricedResolution = config
+    ? resolveExactPricedVariant(variants, selectedSpecs, config)
+    : selectedVariantId
+      ? ({ status: "exact" as const, matches: [], variant: variants.find((v) => v.id === selectedVariantId) })
+      : ({ status: "incomplete" as const, matches: [] as typeof variants });
+  const ratePending =
+    isSpecComplete &&
+    (pricedResolution.status === "none" ||
+      pricedResolution.status === "ambiguous" ||
+      (pricedResolution.status === "exact" &&
+        !(pricedResolution.variant?.sellingPrice ?? unitPrice)?.toString().trim()));
 
   return (
     <div className="rounded-xl border border-border p-4">
@@ -748,6 +841,7 @@ function LeadItemFields({
                 setValue(`items.${index}.specifications`, {});
                 setValue(`items.${index}.size`, "");
                 setValue(`items.${index}.uom`, "");
+                setValue(`items.${index}.unitPrice`, "");
               },
             })}
           >
@@ -768,6 +862,7 @@ function LeadItemFields({
                 setValue(`items.${index}.productId`, "");
                 setValue(`items.${index}.specifications`, {});
                 setValue(`items.${index}.uom`, "");
+                setValue(`items.${index}.unitPrice`, "");
                 const parent = products.find(
                   (product) => product.id === event.target.value,
                 );
@@ -778,6 +873,7 @@ function LeadItemFields({
                     `items.${index}.productId`,
                     variant.materialMasterId,
                   );
+                  setValue(`items.${index}.unitPrice`, variant.sellingPrice?.trim() || "");
                   setValue(
                     `items.${index}.specifications`,
                     Object.fromEntries(
@@ -841,7 +937,7 @@ function LeadItemFields({
 
             if (field.type === "select" && field.key === "thickness") {
               return (
-                <LeadField key={field.key} label={field.label} detail="Choose mm or gauge — Farma chart, both ways">
+                <LeadField key={field.key} label={field.label}>
                   <LeadThicknessField
                     specs={selectedSpecs}
                     options={optionsFor("thickness")}
@@ -863,11 +959,7 @@ function LeadItemFields({
 
             if (field.type === "select" && field.key === "width") {
               return (
-                <LeadField
-                  key={field.key}
-                  label={field.label}
-                  detail="Follows thickness unit — Farma mm ↔ gauge"
-                >
+                <LeadField key={field.key} label={field.label}>
                   <LeadWidthField
                     specs={selectedSpecs}
                     options={optionsFor("width")}
@@ -887,6 +979,8 @@ function LeadItemFields({
             }
 
             if (field.type === "select") {
+              const draftMaster =
+                (field.key === "grade" || field.key === "finish") && canManageProducts;
               return (
                 <LeadField key={field.key} label={field.label}>
                   <CreatableSpecSelect
@@ -897,6 +991,7 @@ function LeadItemFields({
                     onChange={(val) => handleSpecChange(field.key, val)}
                     options={optionsFor(field.key)}
                     canCreate={canManageProducts}
+                    draftOnly={draftMaster}
                     categoryId={categoryId}
                     productId={parentProductId}
                     ariaLabel={`Select or add ${field.label}`}
@@ -907,11 +1002,7 @@ function LeadItemFields({
 
             if (field.type === "number" && isInchConvertibleSpecKey(field.key)) {
               return (
-                <LeadField
-                  key={field.key}
-                  label={field.label}
-                  detail="Choose mm or inch — inch is converted to mm"
-                >
+                <LeadField key={field.key} label={field.label}>
                   <LeadDimensionMmField
                     specKey={field.key as "diameter" | "wireDiameterMm" | "innerDiameterMm" | "outerDiameterMm"}
                     label={field.label}
@@ -985,11 +1076,7 @@ function LeadItemFields({
           <>
             {fallbackSelectorKeys.map((key) =>
               isInchConvertibleSpecKey(key) ? (
-                <LeadField
-                  key={key}
-                  label={specLabel(key)}
-                  detail="Choose mm or inch — inch is converted to mm"
-                >
+                <LeadField key={key} label={specLabel(key)}>
                   <LeadDimensionMmField
                     specKey={key as "diameter" | "wireDiameterMm" | "innerDiameterMm" | "outerDiameterMm"}
                     label={specLabel(key)}
@@ -997,24 +1084,15 @@ function LeadItemFields({
                     disabled={!selectedParent}
                     onSpecsChange={(next) => {
                       setValue(`items.${index}.specifications`, next);
-                      const matches = variants.filter((variant) =>
-                        fallbackSelectorKeys.every(
-                          (specKey) =>
-                            String(variant.specs[specKey] ?? "") === String(next[specKey] ?? ""),
-                        ),
+                      const resolved = resolveExactPricedVariant(variants, next, null);
+                      applyMatchedVariant(
+                        resolved.status === "exact" ? resolved.variant : undefined,
                       );
-                      const exact = matches.length === 1 ? matches[0] : undefined;
-                      setValue(`items.${index}.productVariantId`, exact?.id ?? "");
-                      setValue(`items.${index}.productId`, exact?.materialMasterId ?? "");
                     }}
                   />
                 </LeadField>
               ) : key === "thickness" ? (
-                <LeadField
-                  key={key}
-                  label={specLabel(key)}
-                  detail="Choose mm or gauge — Farma chart, both ways"
-                >
+                <LeadField key={key} label={specLabel(key)}>
                   <LeadThicknessField
                     specs={selectedSpecs}
                     options={optionsFor("thickness")}
@@ -1027,24 +1105,15 @@ function LeadItemFields({
                     onGaugeThicknessMm={(mm) => setValue(`items.${index}.gaugeThicknessMm`, mm)}
                     onSpecsChange={(next) => {
                       setValue(`items.${index}.specifications`, next);
-                      const matches = variants.filter((variant) =>
-                        fallbackSelectorKeys.every(
-                          (specKey) =>
-                            String(variant.specs[specKey] ?? "") === String(next[specKey] ?? ""),
-                        ),
+                      const resolved = resolveExactPricedVariant(variants, next, null);
+                      applyMatchedVariant(
+                        resolved.status === "exact" ? resolved.variant : undefined,
                       );
-                      const exact = matches.length === 1 ? matches[0] : undefined;
-                      setValue(`items.${index}.productVariantId`, exact?.id ?? "");
-                      setValue(`items.${index}.productId`, exact?.materialMasterId ?? "");
                     }}
                   />
                 </LeadField>
               ) : key === "width" ? (
-                <LeadField
-                  key={key}
-                  label={specLabel(key)}
-                  detail="Follows thickness unit — Farma mm ↔ gauge"
-                >
+                <LeadField key={key} label={specLabel(key)}>
                   <LeadWidthField
                     specs={selectedSpecs}
                     options={optionsFor("width")}
@@ -1056,15 +1125,10 @@ function LeadItemFields({
                     onSharedUnitChange={(mm) => setValue(`items.${index}.gaugeThicknessMm`, mm)}
                     onSpecsChange={(next) => {
                       setValue(`items.${index}.specifications`, next);
-                      const matches = variants.filter((variant) =>
-                        fallbackSelectorKeys.every(
-                          (specKey) =>
-                            String(variant.specs[specKey] ?? "") === String(next[specKey] ?? ""),
-                        ),
+                      const resolved = resolveExactPricedVariant(variants, next, null);
+                      applyMatchedVariant(
+                        resolved.status === "exact" ? resolved.variant : undefined,
                       );
-                      const exact = matches.length === 1 ? matches[0] : undefined;
-                      setValue(`items.${index}.productVariantId`, exact?.id ?? "");
-                      setValue(`items.${index}.productId`, exact?.materialMasterId ?? "");
                     }}
                   />
                 </LeadField>
@@ -1078,6 +1142,7 @@ function LeadItemFields({
                     onChange={(val) => setFallbackSpec(key, val)}
                     options={optionsFor(key)}
                     canCreate={canManageProducts}
+                    draftOnly={key === "grade" || key === "finish"}
                     categoryId={categoryId}
                     productId={parentProductId}
                     ariaLabel={`Select or add ${specLabel(key)}`}
@@ -1089,11 +1154,7 @@ function LeadItemFields({
               const unit = specUnit(key);
               if (isInchConvertibleSpecKey(key)) {
                 return (
-                  <LeadField
-                    key={key}
-                    label={specLabel(key)}
-                    detail="Choose mm or inch — inch is converted to mm"
-                  >
+                  <LeadField key={key} label={specLabel(key)}>
                     <LeadDimensionMmField
                       specKey={key as "diameter" | "wireDiameterMm" | "innerDiameterMm" | "outerDiameterMm"}
                       label={specLabel(key)}
@@ -1106,11 +1167,7 @@ function LeadItemFields({
               }
               if (key === "thickness") {
                 return (
-                  <LeadField
-                    key={key}
-                    label={specLabel(key)}
-                    detail="Choose mm or gauge — Farma chart, both ways"
-                  >
+                  <LeadField key={key} label={specLabel(key)}>
                     <LeadThicknessField
                       specs={selectedSpecs}
                       options={optionsFor("thickness")}
@@ -1128,11 +1185,7 @@ function LeadItemFields({
               }
               if (key === "width") {
                 return (
-                  <LeadField
-                    key={key}
-                    label={specLabel(key)}
-                    detail="Follows thickness unit — Farma mm ↔ gauge"
-                  >
+                  <LeadField key={key} label={specLabel(key)}>
                     <LeadWidthField
                       specs={selectedSpecs}
                       options={optionsFor("width")}
@@ -1190,18 +1243,7 @@ function LeadItemFields({
             {...register(`items.${index}.quantity`)}
           />
         </LeadField>
-        <LeadField
-          label="UOM"
-          detail={
-            !parentProductId
-              ? "Select a product first"
-              : uomsLoading
-                ? "Loading allowed units…"
-                : allowedUoms.length
-                  ? "From category UOM configuration"
-                  : "No category UOMs configured"
-          }
-        >
+        <LeadField label="UOM">
           <select
             className={`${fieldClass} ${!isSpecComplete || !allowedUoms.length ? "bg-muted/50 cursor-not-allowed opacity-75" : ""}`}
             disabled={!isSpecComplete || !allowedUoms.length || uomsLoading}
@@ -1225,10 +1267,7 @@ function LeadItemFields({
             ))}
           </select>
         </LeadField>
-        <LeadField
-          label="Est. weight (kg)"
-          detail={isSpecComplete ? "Auto from qty, UOM & dimensions (SS ~8 g/cm³)" : undefined}
-        >
+        <LeadField label="Est. weight (kg)">
           <input
             className={`${fieldClass} bg-muted/30 cursor-not-allowed opacity-90`}
             placeholder={isSpecComplete ? "Calculating…" : "Complete specification first"}
@@ -1237,10 +1276,377 @@ function LeadItemFields({
             value={autoEstimatedWeight}
           />
         </LeadField>
-        <LeadField
-          label="Required delivery"
-          detail="Customer demand for this product"
-        >
+        {(() => {
+          const matchedVariant = variants.find((variant) => variant.id === selectedVariantId);
+          const priceUom = matchedVariant?.uom || uom || "UOM";
+          const lineTotal = leadLineAmount(
+            unitPrice,
+            quantity,
+            uom || priceUom,
+            priceUom,
+            autoEstimatedWeight,
+          );
+          async function submitApplyRate(options?: { applyExistingRate?: boolean }) {
+            if (!selectedParent || !rateEditor || !config) return;
+            setRateEditor((prev) =>
+              prev ? { ...prev, saving: true, error: undefined } : prev,
+            );
+            try {
+              const liveKeys = activePricingMatchKeys(config, selectedSpecs);
+              const liveFingerprint = buildNormalizedPricingFingerprint(
+                selectedSpecs,
+                liveKeys,
+                config,
+              );
+              if (liveFingerprint !== rateEditor.fingerprint) {
+                setRateEditor((prev) =>
+                  prev
+                    ? {
+                        ...prev,
+                        saving: false,
+                        error:
+                          "Specification changed while the rate editor was open. Close and review the updated specification.",
+                      }
+                    : prev,
+                );
+                return;
+              }
+              const response = await fetch("/api/v1/leads/apply-catalog-rate", {
+                method: "POST",
+                headers: {
+                  "content-type": "application/json",
+                  "idempotency-key": crypto.randomUUID(),
+                },
+                body: JSON.stringify({
+                  productId: selectedParent.id,
+                  specifications: rateEditor.specs,
+                  unitRate: rateEditor.unitRate.trim(),
+                  uom: uom || priceUom || undefined,
+                  expectedPricingFingerprint: rateEditor.fingerprint,
+                  applyExistingRate: options?.applyExistingRate || undefined,
+                }),
+              });
+              const json = await response.json().catch(() => null);
+              if (!response.ok) {
+                const err = json?.error;
+                if (err?.code === RATE_CONFLICT_CODE) {
+                  setRateEditor((prev) =>
+                    prev
+                      ? {
+                          ...prev,
+                          saving: false,
+                          conflictExistingRate: String(err.details?.existingRate ?? ""),
+                          error: err.message || "Rate conflict with Product Master.",
+                        }
+                      : prev,
+                  );
+                  return;
+                }
+                if (err?.code === STALE_SPECIFICATION_CODE) {
+                  setRateEditor((prev) =>
+                    prev
+                      ? {
+                          ...prev,
+                          saving: false,
+                          error: err.message || "Specification changed. Review and try again.",
+                        }
+                      : prev,
+                  );
+                  return;
+                }
+                throw new Error(err?.message || "Failed to save & apply rate.");
+              }
+              const data = json?.data ?? json;
+              const nextSpecs = {
+                ...rateEditor.specs,
+                ...(data.specs && typeof data.specs === "object" ? data.specs : {}),
+              } as Record<string, string>;
+              const resolvedSpecs = Object.fromEntries(
+                Object.entries(nextSpecs)
+                  .filter(([, value]) => value != null && typeof value !== "object")
+                  .map(([key, value]) => [key, String(value)]),
+              );
+              setValue(`items.${index}.specifications`, resolvedSpecs);
+              setValue(`items.${index}.productVariantId`, data.productVariantId);
+              setValue(`items.${index}.productId`, data.materialMasterId);
+              setValue(`items.${index}.unitPrice`, data.sellingPrice ?? "");
+              if (data.uom) setValue(`items.${index}.uom`, data.uom);
+              onCatalogVariantApplied(
+                selectedParent.id,
+                {
+                  id: data.productVariantId,
+                  materialMasterId: data.materialMasterId,
+                  sku: data.sku || data.productVariantId,
+                  displayName: data.displayName || selectedParent.name,
+                  uom: data.uom || priceUom,
+                  sellingPrice: data.sellingPrice,
+                  specs: resolvedSpecs,
+                },
+                {
+                  grade: data.grade
+                    ? { id: data.grade.id, name: data.grade.name }
+                    : undefined,
+                  finish: data.finish
+                    ? { id: data.finish.id, name: data.finish.name }
+                    : undefined,
+                },
+              );
+              if (data.grade?.name) {
+                window.dispatchEvent(
+                  new CustomEvent("spec-options-updated", {
+                    detail: {
+                      fieldName: "grade",
+                      option: { id: data.grade.id, value: data.grade.name, label: data.grade.name },
+                    },
+                  }),
+                );
+              }
+              if (data.finish?.name) {
+                window.dispatchEvent(
+                  new CustomEvent("spec-options-updated", {
+                    detail: {
+                      fieldName: "finish",
+                      option: {
+                        id: data.finish.id,
+                        value: data.finish.name,
+                        label: data.finish.name,
+                      },
+                    },
+                  }),
+                );
+              }
+              toast.success(
+                data.appliedExistingRate
+                  ? "Existing Product Master rate applied."
+                  : rateEditor.mode === "create"
+                    ? "Specification created in product catalog and rate applied."
+                    : "Rate saved to Product Master and applied.",
+              );
+              setRateEditor(null);
+            } catch (error) {
+              setRateEditor((prev) =>
+                prev
+                  ? {
+                      ...prev,
+                      saving: false,
+                      error: error instanceof Error ? error.message : "Failed to save rate.",
+                    }
+                  : prev,
+              );
+            }
+          }
+
+          return (
+            <>
+              <LeadField label="Unit price">
+                {ratePending ? (
+                  <div className="space-y-2">
+                    <input
+                      className={`${fieldClass} bg-muted/30 cursor-not-allowed opacity-90`}
+                      readOnly
+                      disabled
+                      value="—"
+                      aria-label="Price pending"
+                    />
+                    {pricedResolution.status === "none" ? (
+                      <div className="rounded-lg border border-amber-300/70 bg-amber-50/90 px-3 py-2 dark:border-amber-700/50 dark:bg-amber-950/30">
+                        <p className="text-xs text-amber-900 dark:text-amber-200">
+                          Ye specification aapke software / product catalog me available nahi hai.
+                        </p>
+                        {canManageProducts && selectedParent ? (
+                          <button
+                            type="button"
+                            className="mt-2 inline-flex h-8 items-center rounded-lg bg-info px-3 text-xs font-semibold text-white disabled:opacity-60"
+                            onClick={() => {
+                              if (!config) return;
+                              if (!(uom || "").trim()) {
+                                toast.error("Select UOM before creating this specification in the catalog.");
+                                return;
+                              }
+                              const keys = activePricingMatchKeys(config, selectedSpecs);
+                              const fingerprint = buildNormalizedPricingFingerprint(
+                                selectedSpecs,
+                                keys,
+                                config,
+                              );
+                              setRateEditor({
+                                mode: "create",
+                                fingerprint,
+                                specs: { ...selectedSpecs },
+                                unitRate: "",
+                                saving: false,
+                              });
+                            }}
+                          >
+                            Create
+                          </button>
+                        ) : (
+                          <p className="mt-1 text-[11px] text-amber-800/80 dark:text-amber-300/80">
+                            Product Master access chahiye to ye specification catalog me create karne ke liye.
+                          </p>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-amber-700 dark:text-amber-400">
+                        {pricedResolution.status === "ambiguous"
+                          ? RATE_AMBIGUOUS_MESSAGE
+                          : "Price Pending"}
+                        {canManageProducts && selectedParent && pricedResolution.status !== "ambiguous" ? (
+                          <>
+                            {" "}
+                            <button
+                              type="button"
+                              className="font-medium underline"
+                              onClick={() => {
+                                if (!config) return;
+                                const keys = activePricingMatchKeys(config, selectedSpecs);
+                                const fingerprint = buildNormalizedPricingFingerprint(
+                                  selectedSpecs,
+                                  keys,
+                                  config,
+                                );
+                                setRateEditor({
+                                  mode: "set_price",
+                                  fingerprint,
+                                  specs: { ...selectedSpecs },
+                                  unitRate: "",
+                                  saving: false,
+                                });
+                              }}
+                            >
+                              Set Price
+                            </button>
+                          </>
+                        ) : canManageProducts && selectedParent ? (
+                          <>
+                            {" "}
+                            <Link
+                              href={`/products/catalog/${selectedParent.id}`}
+                              className="font-medium underline"
+                            >
+                              Open Product Master
+                            </Link>
+                          </>
+                        ) : null}
+                      </p>
+                    )}
+                    {rateEditor ? (
+                      <div className="rounded-lg border border-amber-300/60 bg-amber-50/80 p-3 dark:border-amber-700/50 dark:bg-amber-950/30">
+                        <p className="text-sm font-medium text-foreground">
+                          {rateEditor.mode === "create"
+                            ? "Create in product catalog"
+                            : "Save & Apply Rate"}
+                        </p>
+                        {rateEditor.mode === "create" ? (
+                          <p className="mt-1 text-[11px] text-muted">
+                            Unit rate set karke ye specification product variant ke roop me save hogi.
+                          </p>
+                        ) : null}
+                        <div className="mt-2 relative">
+                          <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted">
+                            ₹
+                          </span>
+                          <input
+                            className={`${fieldClass} pl-7`}
+                            inputMode="decimal"
+                            placeholder={`Unit rate · ₹/${priceUom}`}
+                            value={rateEditor.unitRate}
+                            disabled={rateEditor.saving || Boolean(rateEditor.conflictExistingRate)}
+                            onChange={(event) =>
+                              setRateEditor((prev) =>
+                                prev ? { ...prev, unitRate: event.target.value } : prev,
+                              )
+                            }
+                          />
+                        </div>
+                        {rateEditor.conflictExistingRate ? (
+                          <p className="mt-2 text-xs text-amber-800 dark:text-amber-300">
+                            Master rate is{" "}
+                            <span className="font-semibold">
+                              {formatInr(Number(rateEditor.conflictExistingRate))}/{priceUom}
+                            </span>
+                            . Submitted rate was not saved.
+                          </p>
+                        ) : null}
+                        {rateEditor.error ? (
+                          <p className="mt-2 text-xs text-danger">{rateEditor.error}</p>
+                        ) : null}
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {rateEditor.conflictExistingRate ? (
+                            <button
+                              type="button"
+                              className="h-9 rounded-lg bg-info px-3 text-sm font-medium text-white disabled:opacity-60"
+                              disabled={rateEditor.saving}
+                              onClick={() =>
+                                void submitApplyRate({ applyExistingRate: true })
+                              }
+                            >
+                              {rateEditor.saving ? "Applying…" : "Apply Existing Rate"}
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              className="h-9 rounded-lg bg-info px-3 text-sm font-medium text-white disabled:opacity-60"
+                              disabled={
+                                rateEditor.saving ||
+                                !rateEditor.unitRate.trim() ||
+                                !(Number(rateEditor.unitRate) > 0)
+                              }
+                              onClick={() => void submitApplyRate()}
+                            >
+                              {rateEditor.saving
+                                ? "Saving…"
+                                : rateEditor.mode === "create"
+                                  ? "Create & Apply Rate"
+                                  : "Save & Apply Rate"}
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            className="h-9 rounded-lg border border-border px-3 text-sm font-medium"
+                            disabled={rateEditor.saving}
+                            onClick={() => setRateEditor(null)}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="relative">
+                    <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted">
+                      ₹
+                    </span>
+                    <input
+                      className={`${fieldClass} pl-7`}
+                      inputMode="decimal"
+                      placeholder={isSpecComplete ? "Rate pending" : "—"}
+                      disabled={!isSpecComplete}
+                      value={unitPrice}
+                      onChange={(event) => setValue(`items.${index}.unitPrice`, event.target.value)}
+                    />
+                  </div>
+                )}
+              </LeadField>
+              <LeadField label="Line amount">
+                <input
+                  className={`${fieldClass} bg-muted/30 cursor-not-allowed opacity-90`}
+                  readOnly
+                  disabled
+                  value={
+                    lineTotal?.amount != null
+                      ? formatInr(lineTotal.amount)
+                      : lineTotal?.missing
+                        ? "—"
+                        : "—"
+                  }
+                />
+              </LeadField>
+            </>
+          );
+        })()}
+        <LeadField label="Required delivery">
           <input
             className={fieldClass}
             type="date"
@@ -1248,10 +1654,7 @@ function LeadItemFields({
             {...register(`items.${index}.requiredDeliveryDate`)}
           />
         </LeadField>
-        <LeadField
-          label="Promised delivery"
-          detail="Company commitment for this product"
-        >
+        <LeadField label="Promised delivery">
           <input
             className={fieldClass}
             type="date"
@@ -1366,7 +1769,7 @@ export function LeadCreateForm({
   customers,
   employees,
   defaultAssigneeId = "",
-  products,
+  products: initialProducts,
   categories,
   uoms,
   canManageProducts,
@@ -1374,30 +1777,33 @@ export function LeadCreateForm({
   customers: LeadFormCustomer[];
   employees: { id: string; name: string }[];
   defaultAssigneeId?: string;
-  products: {
-    id: string;
-    name: string;
-    sku: string;
-    categoryId: string;
-    categoryName: string;
-    variants: {
-      id: string;
-      materialMasterId: string;
-      sku: string;
-      displayName: string;
-      uom: string;
-      specs: Record<string, unknown>;
-    }[];
-  }[];
+  products: LeadCatalogProduct[];
   categories: { id: string; name: string; code: string }[];
   uoms: { id: string; symbol: string }[];
   canManageProducts: boolean;
 }) {
   const { error, success, pending } = usePost();
   const idempotencyKeyRef = useRef(crypto.randomUUID());
-  const [duplicateMatches, setDuplicateMatches] = useState<DuplicateMatch[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  const [products, setProducts] = useState(initialProducts);
   const router = useRouter();
+
+  useEffect(() => {
+    setProducts(initialProducts);
+  }, [initialProducts]);
+
+  function handleCatalogVariantApplied(
+    productId: string,
+    variant: LeadCatalogProduct["variants"][number],
+  ) {
+    setProducts((prev) =>
+      prev.map((product) => {
+        if (product.id !== productId) return product;
+        const without = product.variants.filter((row) => row.id !== variant.id);
+        return { ...product, variants: [...without, variant] };
+      }),
+    );
+  }
   const defaultUom =
     uoms.find((uom) => uom.symbol === "PCS")?.symbol ??
     uoms[0]?.symbol ??
@@ -1439,7 +1845,6 @@ export function LeadCreateForm({
 
   function applyCustomerSelection(customerId: string) {
     form.setValue("customerId", customerId);
-    setDuplicateMatches([]);
     if (!customerId) {
       form.setValue("contactPerson", "");
       form.setValue("contactDesignation", "");
@@ -1461,17 +1866,66 @@ export function LeadCreateForm({
     form.setValue("gstin", customer.gstin);
   }
 
-  async function submitLead(values: FormValues, forceCreate = false) {
-        const incompleteSelection = values.items.findIndex(
+  async function finalizeAfterCreate(
+    leadId: string,
+    mode: "quotation" | "sales_order",
+    idempotencyBase: string,
+  ) {
+    const response = await fetch(`/api/v1/leads/${leadId}/finalize-success`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": `${idempotencyBase}:${mode}`,
+      },
+      body: JSON.stringify({ mode }),
+    });
+    const json = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(json?.error?.message ?? "Could not finalize Success deal.");
+    }
+    return json?.data as {
+      quotationId?: string;
+      quotationNumber?: string;
+      salesOrderId?: string | null;
+      salesOrderNumber?: string | null;
+      pendingApproval?: boolean;
+    };
+  }
+
+  async function submitLead(
+    values: FormValues,
+    successMode: "none" | "quotation" | "sales_order" = "none",
+  ) {
+        const pendingRateCount = values.items.filter(
           (line) =>
             line.parentProductId && (!line.productVariantId || !line.productId),
-        );
-        if (incompleteSelection >= 0) {
-          form.setError(`items.${incompleteSelection}.productVariantId`, {
-            type: "validate",
-            message: "Select a valid saved specification combination.",
-          });
-          return;
+        ).length;
+        if (pendingRateCount > 0) {
+          toast.info(
+            `${pendingRateCount} item(s) saved as Price Pending — set rates before final quotation.`,
+          );
+        }
+        if (successMode !== "none" || values.result === "SUCCESS") {
+          const filledLines = values.items.filter(
+            (line) =>
+              line.parentProductId ||
+              line.productId ||
+              line.description?.trim() ||
+              line.size?.trim(),
+          );
+          const blocking = filledLines.filter(
+            (line) =>
+              !line.productId ||
+              !line.productVariantId ||
+              !line.unitPrice?.trim() ||
+              !(Number(line.unitPrice) > 0),
+          );
+          if (!filledLines.length || blocking.length > 0) {
+            toast.error(
+              "Result = Success requires every item to have a product variant and a positive unit price.",
+            );
+            return;
+          }
         }
         const normalizeQty = (raw: string) => {
           const trimmed = raw.trim();
@@ -1486,37 +1940,53 @@ export function LeadCreateForm({
           toast.error("Enter a valid 15-character GSTIN or leave blank.");
           return;
         }
-        const mappedItems = values.items.map((line) => ({
-          categoryId: line.categoryId || undefined,
-          productId: line.productId || undefined,
-          parentProductId: line.parentProductId || undefined,
-          productVariantId: line.productVariantId || undefined,
-          specifications: line.specifications,
-          size: line.size || undefined,
-          quantity: normalizeQty(line.quantity),
-          uom: line.uom?.trim() || defaultUom,
-          estimatedWeight: line.estimatedWeight || undefined,
-          itemDescription: line.description || undefined,
-          notes: line.remarks || undefined,
-          mfgGrade: line.mfgGrade || undefined,
-          thickness: line.specifications?.thickness || undefined,
-          gaugeThicknessMm:
-            line.gaugeThicknessMm?.trim() ||
-            line.specifications?.thicknessConvertedMm?.trim() ||
-            line.specifications?.thickness?.trim() ||
-            undefined,
-          weightPerPieceGrams: line.weightPerPieceGrams || undefined,
-          finish: line.finish || undefined,
-          sizeOrCapacity: line.sizeOrCapacity || undefined,
-          packing: line.packing || undefined,
-          logoRequired: line.logoRequired || undefined,
-          artworkUrl: line.artworkUrl || undefined,
-          pricingBasis: line.pricingBasis || undefined,
-          requiredDeliveryDate: line.requiredDeliveryDate?.trim() || undefined,
-          promisedDeliveryDate: line.promisedDeliveryDate?.trim() || undefined,
-        }));
+        const mappedItems = values.items.map((line) => {
+          const ratePendingLine =
+            Boolean(line.parentProductId) &&
+            (!line.productVariantId || !line.productId);
+          const unitRate = line.unitPrice?.trim() || undefined;
+          return {
+            categoryId: line.categoryId || undefined,
+            productId: ratePendingLine ? undefined : line.productId || undefined,
+            parentProductId: line.parentProductId || undefined,
+            productVariantId: ratePendingLine
+              ? undefined
+              : line.productVariantId || undefined,
+            specifications: line.specifications,
+            size: line.size || undefined,
+            quantity: normalizeQty(line.quantity),
+            uom: line.uom?.trim() || defaultUom,
+            estimatedWeight: line.estimatedWeight || undefined,
+            itemDescription: line.description || undefined,
+            notes: line.remarks || undefined,
+            mfgGrade: line.mfgGrade || undefined,
+            thickness: line.specifications?.thickness || undefined,
+            gaugeThicknessMm:
+              line.gaugeThicknessMm?.trim() ||
+              line.specifications?.thicknessConvertedMm?.trim() ||
+              line.specifications?.thickness?.trim() ||
+              undefined,
+            weightPerPieceGrams: line.weightPerPieceGrams || undefined,
+            finish: line.finish || line.specifications?.finish || undefined,
+            grade: line.specifications?.grade || undefined,
+            sizeOrCapacity: line.sizeOrCapacity || undefined,
+            packing: line.packing || undefined,
+            logoRequired: line.logoRequired || undefined,
+            artworkUrl: line.artworkUrl || undefined,
+            pricingBasis: line.pricingBasis || undefined,
+            targetPrice: ratePendingLine ? undefined : unitRate,
+            marketPrice: ratePendingLine ? undefined : unitRate,
+            priceOffered: ratePendingLine ? undefined : unitRate,
+            requiredDeliveryDate: line.requiredDeliveryDate?.trim() || undefined,
+            promisedDeliveryDate: line.promisedDeliveryDate?.trim() || undefined,
+          };
+        });
         const filledItems = mappedItems.filter(
-          (line) => line.productId || line.itemDescription || line.size,
+          (line) =>
+            line.productId ||
+            line.parentProductId ||
+            line.itemDescription ||
+            line.size,
         );
 
         const payload = {
@@ -1543,7 +2013,6 @@ export function LeadCreateForm({
           result: values.result,
           resultReason: values.resultReason || undefined,
           officeRemarks: values.officeRemarks || undefined,
-          createAnyway: forceCreate || undefined,
           items:
             filledItems.length > 0
               ? filledItems
@@ -1568,19 +2037,52 @@ export function LeadCreateForm({
       });
       const json = await response.json().catch(() => null);
       if (!response.ok) {
-        const err = json?.error;
-        if (err?.code === "DUPLICATE_CANDIDATES" && Array.isArray(err.details?.matches)) {
-          setDuplicateMatches(err.details.matches as DuplicateMatch[]);
-          toast.error(err.message ?? "Possible duplicate found.");
-          return;
-        }
-        toast.error(err?.message ?? "Could not create lead.");
+        toast.error(json?.error?.message ?? "Could not create lead.");
         return;
       }
-      setDuplicateMatches([]);
+      const createdId = String(json?.data?.id ?? "");
+      const leadNumber = String(json?.data?.leadNumber ?? "");
+      const createKey = idempotencyKeyRef.current;
       idempotencyKeyRef.current = crypto.randomUUID();
-      toast.success("Lead created.");
-      router.push("/leads");
+
+      const effectiveMode: "none" | "quotation" | "sales_order" =
+        successMode !== "none"
+          ? successMode
+          : values.result === "SUCCESS"
+            ? "sales_order"
+            : "none";
+
+      if (createdId && effectiveMode !== "none") {
+        try {
+          const finalized = await finalizeAfterCreate(createdId, effectiveMode, createKey);
+          if (effectiveMode === "sales_order" && finalized.salesOrderNumber) {
+            toast.success(
+              `Lead ${leadNumber || ""} created · Quotation ${finalized.quotationNumber ?? ""} sent · Sales order ${finalized.salesOrderNumber}`,
+            );
+          } else if (finalized.pendingApproval) {
+            toast.success(
+              `Lead ${leadNumber || ""} created · Quotation draft ${finalized.quotationNumber ?? ""} ready for approval`,
+            );
+          } else {
+            toast.success(
+              `Lead ${leadNumber || ""} created · Quotation ${finalized.quotationNumber ?? ""} marked sent`,
+            );
+          }
+        } catch (error) {
+          toast.error(
+            error instanceof Error
+              ? `${error.message} Lead ${leadNumber || createdId} was still created — open it to finish quotation / order.`
+              : "Lead created, but Success finalize failed. Open the lead to continue.",
+          );
+          router.push(`/leads/${createdId}`);
+          router.refresh();
+          return;
+        }
+      } else {
+        toast.success(leadNumber ? `Lead ${leadNumber} created.` : "Lead created.");
+      }
+
+      router.push(createdId ? `/leads/${createdId}` : "/leads");
       router.refresh();
     } finally {
       setSubmitting(false);
@@ -1590,7 +2092,9 @@ export function LeadCreateForm({
   return (
     <form
       className="space-y-5"
-      onSubmit={form.handleSubmit((values) => void submitLead(values, false))}
+      onSubmit={form.handleSubmit((values) =>
+        void submitLead(values, values.result === "SUCCESS" ? "sales_order" : "none"),
+      )}
     >
       <SectionCard
         step={1}
@@ -1761,6 +2265,7 @@ export function LeadCreateForm({
               categories={categories}
               products={products}
               canManageProducts={canManageProducts}
+              onCatalogVariantApplied={handleCatalogVariantApplied}
             />
           ))}
         </div>
@@ -1821,35 +2326,43 @@ export function LeadCreateForm({
         </div>
       </SectionCard>
 
-      {duplicateMatches.length ? (
-        <div className="space-y-3">
-          <LeadPossibleDuplicates matches={duplicateMatches} />
-          <button
-            type="button"
-            className="inline-flex h-10 items-center rounded-[10px] border border-amber-400 bg-amber-50 px-4 text-sm font-semibold text-amber-900"
-            disabled={submitting}
-            onClick={() => void submitLead(form.getValues(), true)}
-          >
-            Create anyway
-          </button>
-        </div>
-      ) : null}
-
       <FormFeedback error={error} success={success} />
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-sm text-muted">
           <span className="text-danger">*</span> Required field
+          {result === "SUCCESS" ? (
+            <span className="mt-1 block text-xs text-info">
+              Result = Success: Create lead will also raise quotation + sales order. Use Send
+              quotation to send the quote without converting yet.
+            </span>
+          ) : null}
         </p>
         <div className="flex flex-wrap items-center gap-3">
           <Link href="/leads" className="btn-secondary h-11 px-5">
             Cancel
           </Link>
+          {result === "SUCCESS" ? (
+            <button
+              type="button"
+              disabled={submitting || pending}
+              className="inline-flex h-11 items-center justify-center rounded-[10px] border border-info bg-white px-5 text-sm font-semibold text-info transition hover:bg-info/5 disabled:cursor-not-allowed disabled:opacity-60"
+              onClick={() =>
+                void form.handleSubmit((values) => submitLead(values, "quotation"))()
+              }
+            >
+              {submitting || pending ? "Saving…" : "Send quotation"}
+            </button>
+          ) : null}
           <button
             type="submit"
             disabled={submitting || pending}
             className="inline-flex h-11 items-center justify-center rounded-[10px] bg-info px-5 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {submitting || pending ? "Saving…" : "Create lead"}
+            {submitting || pending
+              ? "Saving…"
+              : result === "SUCCESS"
+                ? "Create lead + sales order"
+                : "Create lead"}
           </button>
         </div>
       </div>
